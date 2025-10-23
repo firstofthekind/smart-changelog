@@ -108,6 +108,14 @@ class AIHelperTests(unittest.TestCase):
 
         self.assertIsNone(ai_helper._first_text(Response()))
 
+    def test_first_text_skips_non_dict_items(self) -> None:
+        class Response:
+            output_text = ""
+            data = [None, {"content": [{"type": "output_text", "text": "Value"}]}]
+
+        extracted = ai_helper._first_text(Response())
+        self.assertEqual(extracted, "Value")
+
 
 if __name__ == "__main__":
     unittest.main()

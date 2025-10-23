@@ -66,10 +66,10 @@ def get_ticket_summary(ticket_id: str, *, jira_url: str | None = None, token: st
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
     except requests.HTTPError as exc:  # type: ignore[redundant-except]
-        if exc.response is not None and exc.response.status_code == 404:
-            LOGGER.warning("Jira ticket %s not found (404)", ticket_id)
-        else:
-            LOGGER.warning("Failed to fetch Jira ticket %s: %s", ticket_id, exc)
+        not_found = exc.response is not None and exc.response.status_code == 404
+        message = "Jira ticket %s not found (404)" if not_found else "Failed to fetch Jira ticket %s: %s"
+        args: tuple[Any, ...] = (ticket_id,) if not_found else (ticket_id, exc)
+        LOGGER.warning(message, *args)
         return JiraTicket(title=ticket_id).as_dict()
     except requests.RequestException as exc:
         LOGGER.warning("Network error while fetching Jira ticket %s: %s", ticket_id, exc)

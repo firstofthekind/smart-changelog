@@ -62,10 +62,8 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
     changelog_path = Path("CHANGELOG.md")
     changelog_text = _read_changelog(changelog_path)
 
-    ticket_id = _detect_ticket_id(forced_ticket)
-    if not ticket_id:
-        LOGGER.error("Unable to determine a Jira ticket identifier from the current context")
-        return
+    context_strings = _gather_context_strings()
+    ticket_id = _detect_ticket_id(forced_ticket, context_strings)
 
     commit_title = _git_output(["git", "log", "-1", "--pretty=%s"]) or ""
     category_key = _categorize(commit_title)
@@ -74,8 +72,20 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
     author = _detect_author()
     date_str = datetime.utcnow().date().isoformat()
 
-    jira_summary = get_ticket_summary(ticket_id)
-    title = jira_summary.get("title") or commit_title or ticket_id
+    jira_summary: Dict[str, str] = {}
+    title = commit_title
+    fallback_mode = False
+    if not ticket_id:
+        fallback_mode = True
+        ticket_id = _fallback_ticket_identifier()
+        fallback_title = _first_non_empty(context_strings) or commit_title or "Unspecified change"
+        title = fallback_title
+        jira_summary = {"title": title}
+        LOGGER.info("Proceeding without Jira ticket; using fallback identifier %s", ticket_id)
+    if not fallback_mode:
+        jira_summary = get_ticket_summary(ticket_id)
+        title = jira_summary.get("title") or commit_title or ticket_id
+
     if use_ai:
         title = enhance_description(title, ticket_id)
 
@@ -118,7 +128,7 @@ def _read_changelog(path: Path) -> str:
     return template_text
 
 
-def _detect_ticket_id(forced_ticket: Optional[str]) -> Optional[str]:
+def _detect_ticket_id(forced_ticket: Optional[str], candidates: list[str]) -> Optional[str]:
     if forced_ticket:
         match = TICKET_PATTERN.search(forced_ticket)
         if match:
@@ -126,6 +136,15 @@ def _detect_ticket_id(forced_ticket: Optional[str]) -> Optional[str]:
         LOGGER.warning("Forced ticket '%s' does not match expected pattern", forced_ticket)
         return None
 
+    for candidate in candidates:
+        match = TICKET_PATTERN.search(candidate)
+        if match:
+            return match.group(1)
+
+    return None
+
+
+def _gather_context_strings() -> list[str]:
     candidates = []
     env_vars = [
         "CI_COMMIT_TITLE",
@@ -146,12 +165,7 @@ def _detect_ticket_id(forced_ticket: Optional[str]) -> Optional[str]:
     branch_name = _git_output(["git", "rev-parse", "--abbrev-ref", "HEAD"]) or ""
     candidates.extend(filter(None, [commit_message, branch_name]))
 
-    for candidate in candidates:
-        match = TICKET_PATTERN.search(candidate)
-        if match:
-            return match.group(1)
-
-    return None
+    return candidates
 
 
 def _categorize(commit_title: str) -> str:
@@ -195,7 +209,7 @@ def _upsert_entry(content: str, heading: str, entry: str, ticket_id: str) -> Tup
             unreleased_block = unreleased_match.group(1)
             updated_block = unreleased_block.rstrip() + "\n\n" + new_section
             content = content[:start] + updated_block + content[end:]
-        else:
+        if not unreleased_match:
             content = content.rstrip() + "\n\n## [Unreleased]\n\n" + new_section
         return content, True
 
@@ -313,6 +327,20 @@ def _current_branch() -> Optional[str]:
         return branch
 
     return None
+
+
+def _fallback_ticket_identifier() -> str:
+    commit_sha = _git_output(["git", "rev-parse", "--short", "HEAD"])
+    if commit_sha:
+        return f"CHANGE-{commit_sha}"
+    return "CHANGE-NOREF"
+
+
+def _first_non_empty(values: list[str]) -> str:
+    for value in values:
+        if value and value.strip():
+            return value.strip()
+    return ""
 
 
 __all__ = ["run_update"]
