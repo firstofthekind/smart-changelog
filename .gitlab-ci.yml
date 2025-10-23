@@ -6,7 +6,8 @@ update_changelog:
   image: python:3.12
   script:
     - pip install .
-    - smart-changelog update
+    - rm -rf build smart_changelog.egg-info
+    - SMART_CHANGELOG_SKIP_COMMIT=1 smart-changelog update
     - git config user.email "bot@company.com"
     - git config user.name "SmartChangelog Bot"
     - git add CHANGELOG.md

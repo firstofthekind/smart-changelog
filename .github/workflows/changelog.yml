@@ -4,6 +4,9 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: write
+
 jobs:
   changelog:
     runs-on: ubuntu-latest
@@ -14,13 +17,17 @@ jobs:
         with:
           python-version: 3.12
       - name: Install Smart-Changelog
-        run: pip install .
+        run: |
+          pip install .
+          rm -rf build smart_changelog.egg-info
       - name: Run Smart-Changelog
-        run: smart-changelog update
+        run: SMART_CHANGELOG_SKIP_COMMIT=1 smart-changelog update
       - name: Commit and push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.email "bot@company.com"
           git config user.name "SmartChangelog Bot"
           git add CHANGELOG.md
-          git commit -m "chore: update changelog" || echo "No changes"
-          git push
+          git commit -m "chore: update changelog" || exit 0
+          git push https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git HEAD:${{ github.ref }}

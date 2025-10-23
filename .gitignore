@@ -1,3 +1,5 @@
 .venv/
 .pycache/
 __pycache__/
+build/
+smart_changelog.egg-info/
