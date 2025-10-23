@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from importlib import resources
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 try:
     from jinja2 import Template
@@ -63,59 +63,78 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
     changelog_text = _read_changelog(changelog_path)
 
     context_strings = _gather_context_strings()
+    existing_ids = _extract_existing_ids(changelog_text)
     ticket_id = _detect_ticket_id(forced_ticket, context_strings)
 
     commit_title = _git_output(["git", "log", "-1", "--pretty=%s"]) or ""
-    category_key = _categorize(commit_title)
-    heading = SECTION_HEADINGS.get(category_key, SECTION_HEADINGS["change"])
-
-    author = _detect_author()
     date_str = datetime.utcnow().date().isoformat()
+    author = _detect_author()
 
-    jira_summary: Dict[str, str] = {}
-    title = commit_title
-    fallback_mode = False
-    if not ticket_id:
-        fallback_mode = True
-        ticket_id = _fallback_ticket_identifier()
-        fallback_title = _first_non_empty(context_strings) or commit_title or "Unspecified change"
-        title = fallback_title
-        jira_summary = {"title": title}
-        LOGGER.info("Proceeding without Jira ticket; using fallback identifier %s", ticket_id)
-    if not fallback_mode:
+    contexts: List[UpdateContext] = []
+
+    if ticket_id:
         jira_summary = get_ticket_summary(ticket_id)
         title = jira_summary.get("title") or commit_title or ticket_id
+        if use_ai:
+            title = enhance_description(title, ticket_id)
+        contexts.append(
+            UpdateContext(
+                ticket_id=ticket_id,
+                category=_categorize(commit_title),
+                title=title,
+                author=author,
+                date=date_str,
+            )
+        )
+    else:
+        fallback_contexts = _contexts_from_commit_history(existing_ids, use_ai)
+        if not fallback_contexts:
+            fallback_id = _fallback_ticket_identifier()
+            fallback_title = commit_title or _first_non_empty(context_strings) or "Unspecified change"
+            if use_ai:
+                fallback_title = enhance_description(fallback_title, fallback_id)
+            fallback_contexts = [
+                UpdateContext(
+                    ticket_id=fallback_id,
+                    category=_categorize(commit_title),
+                    title=fallback_title,
+                    author=author,
+                    date=date_str,
+                )
+            ]
+            LOGGER.info("Proceeding without Jira ticket; using fallback identifier %s", fallback_contexts[0].ticket_id)
+        contexts.extend(fallback_contexts)
 
-    if use_ai:
-        title = enhance_description(title, ticket_id)
+    changes_made = False
+    last_entry = ""
+    changelog_updated = changelog_text
 
-    context = UpdateContext(
-        ticket_id=ticket_id,
-        category=category_key,
-        title=title,
-        author=author,
-        date=date_str,
-    )
+    for ctx in contexts:
+        heading = SECTION_HEADINGS.get(ctx.category, SECTION_HEADINGS["change"])
+        LOGGER.info("Updating changelog for %s (category: %s)", ctx.ticket_id, ctx.category)
+        entry = ctx.render_entry()
+        changelog_updated, entry_changed = _upsert_entry(changelog_updated, heading, entry, ctx.ticket_id)
+        existing_ids.add(ctx.ticket_id)
+        changes_made = changes_made or entry_changed
+        last_entry = entry
 
-    LOGGER.info("Updating changelog for %s (category: %s)", ticket_id, category_key)
-    new_entry = context.render_entry()
+    changelog_updated, date_changed = _update_last_updated(changelog_updated, date_str)
+    changes_made = changes_made or date_changed
 
-    updated_text, entry_changed = _upsert_entry(changelog_text, heading, new_entry, ticket_id)
-    updated_text, date_changed = _update_last_updated(updated_text, date_str)
-
-    if not entry_changed and not date_changed:
-        LOGGER.info("Changelog already up to date for %s", ticket_id)
+    if not changes_made:
+        LOGGER.info("Changelog already up to date")
         return
 
     if dry_run:
         LOGGER.info("Dry-run enabled; not writing any files")
-        print(updated_text)
+        print(changelog_updated)
         return
 
-    changelog_path.write_text(updated_text, encoding="utf-8")
+    changelog_path.write_text(changelog_updated, encoding="utf-8")
     LOGGER.debug("CHANGELOG.md updated on disk")
 
-    _maybe_commit_and_push("CHANGELOG.md", new_entry)
+    if contexts:
+        _maybe_commit_and_push("CHANGELOG.md", last_entry)
 
 
 def _read_changelog(path: Path) -> str:
@@ -193,6 +212,46 @@ def _detect_author() -> str:
 
     author = _git_output(["git", "log", "-1", "--pretty=%an"]) or ""
     return author or "Unknown"
+
+
+def _extract_existing_ids(content: str) -> Set[str]:
+    return set(re.findall(r"(CHANGE-[A-Za-z0-9]+)", content))
+
+
+def _contexts_from_commit_history(existing_ids: Set[str], use_ai: bool, limit: int = 50) -> List[UpdateContext]:
+    log_output = _git_output(
+        ["git", "log", f"--pretty=format:%H%x09%s%x09%an%x09%cs", "-n", str(limit)]
+    )
+    if not log_output:
+        return []
+
+    new_contexts: List[UpdateContext] = []
+    for line in log_output.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 4:
+            continue
+        full_sha, subject, author, commit_date = parts
+        ticket_id = f"CHANGE-{_short_sha(full_sha)}"
+        if ticket_id in existing_ids:
+            break
+
+        title = subject.strip() or full_sha[:12]
+        category = _categorize(subject)
+        if use_ai:
+            title = enhance_description(title, ticket_id)
+
+        new_contexts.append(
+            UpdateContext(
+                ticket_id=ticket_id,
+                category=category,
+                title=title,
+                author=author.strip() or "Unknown",
+                date=commit_date,
+            )
+        )
+
+    new_contexts.reverse()
+    return new_contexts
 
 
 def _upsert_entry(content: str, heading: str, entry: str, ticket_id: str) -> Tuple[str, bool]:
@@ -327,6 +386,10 @@ def _current_branch() -> Optional[str]:
         return branch
 
     return None
+
+
+def _short_sha(full_sha: str) -> str:
+    return (full_sha or "nohash")[:7]
 
 
 def _fallback_ticket_identifier() -> str:

@@ -356,6 +356,19 @@ class UpdaterFunctionTests(unittest.TestCase):
             result = updater._git_output(["git"])
         self.assertEqual(result, "value")
 
+    def test_contexts_from_commit_history_gathers_commits(self) -> None:
+        log_output = "abcdef123456789\tfeat: add API\tAlice\t2024-01-01\n1111111abc\tfix bug\tBob\t2023-12-31"
+        with mock.patch("smart_changelog.updater._git_output", return_value=log_output):
+            contexts = updater._contexts_from_commit_history({"CHANGE-1111111"}, use_ai=False, limit=10)
+
+        self.assertEqual(len(contexts), 1)
+        ctx = contexts[0]
+        self.assertEqual(ctx.ticket_id, "CHANGE-abcdef1")
+        self.assertEqual(ctx.title, "feat: add API")
+        self.assertEqual(ctx.author, "Alice")
+        self.assertEqual(ctx.date, "2024-01-01")
+        self.assertEqual(ctx.category, "feature")
+
     def test_fallback_ticket_identifier_uses_git(self) -> None:
         with mock.patch("smart_changelog.updater._git_output", return_value="abcdef1"):
             token = updater._fallback_ticket_identifier()
@@ -485,23 +498,42 @@ class UpdaterFunctionTests(unittest.TestCase):
 
     def test_run_update_without_ticket(self) -> None:
         os.chdir(self.cwd)
-        with mock.patch("smart_changelog.updater._gather_context_strings", return_value=["MR: Add feature"]), mock.patch(
-            "smart_changelog.updater._detect_ticket_id", return_value=None
-        ), mock.patch("smart_changelog.updater._categorize", return_value="feature"), mock.patch(
-            "smart_changelog.updater._upsert_entry", return_value=("content", True)
+        changelog = (
+            "# Changelog\n\n"
+            "## [Unreleased]\n_Last updated: 2025-01-01_\n\n"
+            "### 🧩 New Features\n\n"
+            "### 🐛 Bug Fixes\n\n"
+            "### ⚙️ Changes\n"
+        )
+        context = updater.UpdateContext(
+            ticket_id="CHANGE-abc123",
+            category="change",
+            title="Commit title",
+            author="Alice",
+            date="2025-02-02",
+        )
+        with mock.patch("smart_changelog.updater._gather_context_strings", return_value=["Commit title"]), mock.patch(
+            "smart_changelog.updater._read_changelog", return_value=changelog
         ), mock.patch(
-            "smart_changelog.updater._update_last_updated", return_value=("content", True)
+            "smart_changelog.updater._detect_ticket_id", return_value=None
+        ), mock.patch(
+            "smart_changelog.updater._contexts_from_commit_history", return_value=[context]
+        ), mock.patch(
+            "smart_changelog.updater._categorize", return_value="change"
+        ), mock.patch(
+            "smart_changelog.updater._upsert_entry", return_value=(changelog, True)
+        ) as upsert_mock, mock.patch(
+            "smart_changelog.updater._update_last_updated", return_value=(changelog, True)
         ), mock.patch(
             "smart_changelog.updater.Path.write_text"
         ), mock.patch(
             "smart_changelog.updater._maybe_commit_and_push"
         ) as commit_mock, mock.patch(
             "smart_changelog.updater.get_ticket_summary"
-        ) as jira_mock, mock.patch(
-            "smart_changelog.updater._git_output", return_value="abcdef1"
-        ):
+        ) as jira_mock:
             updater.run_update(dry_run=False, use_ai=False, forced_ticket=None, verbose=False)
 
+        upsert_mock.assert_called_once()
         commit_mock.assert_called_once()
         jira_mock.assert_not_called()
 
