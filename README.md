@@ -112,5 +112,6 @@ Then call `./gradlew updateChangelog` locally or in CI to keep the changelog up-
 - Set `SMART_CHANGELOG_SKIP_COMMIT=1` to bypass the built-in auto-commit/push step when experimenting.
 - Combine with feature branch protections so `main` remains the single source of truth.
 
+
 ## License
 Distributed under the MIT License. See `LICENSE` for details.
