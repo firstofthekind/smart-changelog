@@ -1,0 +1,18 @@
+#!/bin/zsh
+set -euo pipefail
+
+PROJECT_ROOT=${0:a:h}
+VENV_DIR="$PROJECT_ROOT/.venv"
+
+if [ ! -d "$VENV_DIR" ]; then
+  echo "Creating virtual environment in $VENV_DIR" >&2
+  python3 -m venv "$VENV_DIR"
+fi
+
+source "$VENV_DIR/bin/activate"
+
+if [ $# -eq 0 ]; then
+  exec zsh
+else
+  exec "$@"
+fi

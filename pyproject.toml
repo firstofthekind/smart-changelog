@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smart-changelog"
+version = "0.1.0"
+description = "Single-file, conflict-free changelog automation for GitHub, GitLab, and Jira."
+readme = "README.md"
+authors = [{ name = "Viacheslav Liashenko" }]
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "requests",
+    "openai>=1.0.0",
+    "jinja2>=3.1",
+]
+keywords = ["changelog", "automation", "jira", "cicd", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Build Tools",
+]
+
+[project.urls]
+Homepage = "https://github.com/viacheslavliashenko/smart-changelog"
+Issues = "https://github.com/viacheslavliashenko/smart-changelog/issues"
+
+[project.scripts]
+smart-changelog = "smart_changelog.cli:main"
+
+[tool.setuptools.package-data]
+smart_changelog = ["templates/*.md"]

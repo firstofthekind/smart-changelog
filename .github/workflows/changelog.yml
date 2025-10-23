@@ -1,0 +1,26 @@
+name: Update Changelog
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  changelog:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: 3.12
+      - name: Install Smart-Changelog
+        run: pip install smart-changelog
+      - name: Run Smart-Changelog
+        run: smart-changelog update
+      - name: Commit and push
+        run: |
+          git config user.email "bot@company.com"
+          git config user.name "SmartChangelog Bot"
+          git add CHANGELOG.md
+          git commit -m "chore: update changelog" || echo "No changes"
+          git push

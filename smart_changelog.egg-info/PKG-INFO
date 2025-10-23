@@ -1,3 +1,31 @@
+Metadata-Version: 2.4
+Name: smart-changelog
+Version: 0.1.0
+Summary: Single-file, conflict-free changelog automation for GitHub, GitLab, and Jira.
+Author: Viacheslav Liashenko
+License: MIT
+Project-URL: Homepage, https://github.com/viacheslavliashenko/smart-changelog
+Project-URL: Issues, https://github.com/viacheslavliashenko/smart-changelog/issues
+Keywords: changelog,automation,jira,cicd,cli
+Classifier: Development Status :: 3 - Alpha
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Software Development :: Build Tools
+Requires-Python: >=3.9
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: requests
+Requires-Dist: openai>=1.0.0
+Requires-Dist: jinja2>=3.1
+Dynamic: license-file
+
 # Smart-Changelog
 
 Automate changelog maintenance across GitHub Actions and GitLab CI pipelines with a single, conflict-free file.
