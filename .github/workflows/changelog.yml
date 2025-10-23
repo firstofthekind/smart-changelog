@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: 3.12
       - name: Install Smart-Changelog
-        run: pip install smart-changelog
+        run: pip install .
       - name: Run Smart-Changelog
         run: smart-changelog update
       - name: Commit and push

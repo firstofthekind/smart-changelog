@@ -5,7 +5,7 @@ update_changelog:
   stage: changelog
   image: python:3.12
   script:
-    - pip install smart-changelog
+    - pip install .
     - smart-changelog update
     - git config user.email "bot@company.com"
     - git config user.name "SmartChangelog Bot"
