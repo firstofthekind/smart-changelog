@@ -62,6 +62,7 @@ def get_ticket_summary(ticket_id: str, *, jira_url: str | None = None, token: st
         "Accept": "application/json",
     }
 
+    LOGGER.debug("Requesting Jira issue %s from %s", ticket_id, url)
     try:
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()

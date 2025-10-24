@@ -73,9 +73,11 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
     contexts: List[UpdateContext] = []
 
     if ticket_id:
+        LOGGER.info("Fetching Jira summary for %s", ticket_id)
         jira_summary = get_ticket_summary(ticket_id)
         title = jira_summary.get("title") or commit_title or ticket_id
         if use_ai:
+            LOGGER.info("Using OpenAI to enhance title for %s", ticket_id)
             title = enhance_description(title, ticket_id)
         contexts.append(
             UpdateContext(
@@ -87,11 +89,13 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
             )
         )
     else:
+        LOGGER.info("No Jira ticket detected; gathering commit history")
         fallback_contexts = _contexts_from_commit_history(existing_ids, use_ai)
         if not fallback_contexts:
             fallback_id = _fallback_ticket_identifier()
             fallback_title = commit_title or _first_non_empty(context_strings) or "Unspecified change"
             if use_ai:
+                LOGGER.info("Using OpenAI to enhance fallback title for %s", fallback_id)
                 fallback_title = enhance_description(fallback_title, fallback_id)
             fallback_contexts = [
                 UpdateContext(
@@ -238,6 +242,7 @@ def _contexts_from_commit_history(existing_ids: Set[str], use_ai: bool, limit: i
         title = subject.strip() or full_sha[:12]
         category = _categorize(subject)
         if use_ai:
+            LOGGER.info("Using OpenAI to enhance commit title for %s", ticket_id)
             title = enhance_description(title, ticket_id)
 
         new_contexts.append(
