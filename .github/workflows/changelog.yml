@@ -21,7 +21,23 @@ jobs:
           pip install .
           rm -rf build smart_changelog.egg-info
       - name: Run Smart-Changelog
-        run: SMART_CHANGELOG_SKIP_COMMIT=1 smart-changelog update
+        env:
+          JIRA_URL: ${{ secrets.JIRA_URL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          JIRA_URL_VAR: ${{ vars.JIRA_URL }}
+          JIRA_TOKEN_VAR: ${{ vars.JIRA_TOKEN }}
+          OPENAI_API_KEY_VAR: ${{ vars.OPENAI_API_KEY }}
+        run: |
+          if [ -f .env ]; then
+            set -a
+            . ./.env
+            set +a
+          fi
+          export JIRA_URL="${JIRA_URL:-$JIRA_URL_VAR}"
+          export JIRA_TOKEN="${JIRA_TOKEN:-$JIRA_TOKEN_VAR}"
+          export OPENAI_API_KEY="${OPENAI_API_KEY:-$OPENAI_API_KEY_VAR}"
+          SMART_CHANGELOG_SKIP_COMMIT=1 smart-changelog update
       - name: Commit and push
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
