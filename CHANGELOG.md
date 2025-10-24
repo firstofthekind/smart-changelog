@@ -10,5 +10,4 @@ _Last updated: 2025-10-24_
 ### 🐛 Bug Fixes
 - main (CHANGE-38a1037, Viacheslav Liashenko, 2025-10-23)
 ### ⚙️ Changes
-- FOK-2 (FOK-2, Viacheslav Liashenko, 2025-10-24)
 - chore: stop tracking build artifacts (CHANGE-8835bf7, Viacheslav Liashenko, 2025-10-23)
