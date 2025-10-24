@@ -14,7 +14,10 @@ update_changelog:
           set +a
         fi
         : "${JIRA_URL:?JIRA_URL must be set}"
-        : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+        if [ -z "${JIRA_TOKEN}" ] && { [ -z "${JIRA_EMAIL}" ] || [ -z "${JIRA_API_TOKEN}" ]; }; then
+          echo "Jira credentials not set (provide JIRA_TOKEN or JIRA_EMAIL/JIRA_API_TOKEN)" >&2
+          exit 1
+        fi
         SMART_CHANGELOG_SKIP_COMMIT=1 smart-changelog update
     - git config user.email "bot@company.com"
     - git config user.name "SmartChangelog Bot"

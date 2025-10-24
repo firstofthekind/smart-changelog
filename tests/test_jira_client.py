@@ -33,6 +33,52 @@ class JiraClientTests(unittest.TestCase):
         self.assertEqual(result["title"], "ABC-124")
         self.assertEqual(result["labels"], [])
 
+    def test_basic_auth_headers_used(self) -> None:
+        os.environ["JIRA_URL"] = "https://example.atlassian.net"
+        os.environ["JIRA_EMAIL"] = "user@example.com"
+        os.environ["JIRA_API_TOKEN"] = "apitoken"
+        os.environ.pop("JIRA_TOKEN", None)
+
+        class FakeResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"fields": {"summary": "Summary"}}
+
+        dummy = _dummy_requests(FakeResponse())
+
+        with mock.patch.object(jira_client, "requests", dummy):
+            jira_client.get_ticket_summary("ABC-200")
+
+        headers = dummy.get.call_args.kwargs["headers"]
+        self.assertTrue(headers["Authorization"].startswith("Basic "))
+
+    def test_bearer_auth_headers_used(self) -> None:
+        os.environ["JIRA_URL"] = "https://example.atlassian.net"
+        os.environ["JIRA_TOKEN"] = "token"
+        os.environ.pop("JIRA_EMAIL", None)
+        os.environ.pop("JIRA_API_TOKEN", None)
+
+        class FakeResponse:
+            status_code = 200
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"fields": {"summary": "Summary"}}
+
+        dummy = _dummy_requests(FakeResponse())
+
+        with mock.patch.object(jira_client, "requests", dummy):
+            jira_client.get_ticket_summary("ABC-201")
+
+        headers = dummy.get.call_args.kwargs["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer token")
+
     def test_successful_response(self) -> None:
         os.environ["JIRA_URL"] = "https://example.atlassian.net"
         os.environ["JIRA_TOKEN"] = "token"
@@ -52,14 +98,7 @@ class JiraClientTests(unittest.TestCase):
                     }
                 }
 
-        class DummyRequests:
-            class HTTPError(Exception):
-                def __init__(self, response=None):
-                    super().__init__("http error")
-                    self.response = response
-
-        dummy = DummyRequests()
-        dummy.get = mock.Mock(return_value=FakeResponse())
+        dummy = _dummy_requests(FakeResponse())
 
         with mock.patch.object(jira_client, "requests", dummy):
             data = jira_client.get_ticket_summary("ABC-125")
@@ -79,17 +118,7 @@ class JiraClientTests(unittest.TestCase):
             def raise_for_status(self):
                 raise dummy.HTTPError(response=self)  # type: ignore[arg-type]
 
-        class DummyRequests:
-            class HTTPError(Exception):
-                def __init__(self, response=None):
-                    super().__init__("http error")
-                    self.response = response
-
-            class RequestException(Exception):
-                pass
-
-        dummy = DummyRequests()
-        dummy.get = mock.Mock(return_value=FakeResponse())
+        dummy = _dummy_requests(FakeResponse(), status_exception=True)
 
         with mock.patch.object(jira_client, "requests", dummy):
             data = jira_client.get_ticket_summary("ABC-404")
@@ -107,17 +136,7 @@ class JiraClientTests(unittest.TestCase):
             def raise_for_status(self):
                 raise dummy.HTTPError(response=self)  # type: ignore[arg-type]
 
-        class DummyRequests:
-            class HTTPError(Exception):
-                def __init__(self, response=None):
-                    super().__init__("http error")
-                    self.response = response
-
-            class RequestException(Exception):
-                pass
-
-        dummy = DummyRequests()
-        dummy.get = mock.Mock(return_value=FakeResponse())
+        dummy = _dummy_requests(FakeResponse(), status_exception=True)
 
         with mock.patch.object(jira_client, "requests", dummy):
             data = jira_client.get_ticket_summary("ABC-500")
@@ -128,14 +147,7 @@ class JiraClientTests(unittest.TestCase):
         os.environ["JIRA_URL"] = "https://example.atlassian.net"
         os.environ["JIRA_TOKEN"] = "token"
 
-        class DummyRequests:
-            class HTTPError(Exception):
-                pass
-
-            class RequestException(Exception):
-                pass
-
-        dummy = DummyRequests()
+        dummy = _dummy_requests(None)
         dummy.get = mock.Mock(side_effect=dummy.RequestException("timeout"))
 
         with mock.patch.object(jira_client, "requests", dummy):
@@ -156,20 +168,37 @@ class JiraClientTests(unittest.TestCase):
             def json(self):
                 raise ValueError("invalid json")
 
-        class DummyRequests:
-            class HTTPError(Exception):
-                pass
-
-            class RequestException(Exception):
-                pass
-
-        dummy = DummyRequests()
-        dummy.get = mock.Mock(return_value=FakeResponse())
+        dummy = _dummy_requests(FakeResponse())
 
         with mock.patch.object(jira_client, "requests", dummy):
             result = jira_client.get_ticket_summary("ABC-JSON")
 
         self.assertEqual(result["title"], "ABC-JSON")
+
+
+def _dummy_requests(response, status_exception: bool = False):
+    class DummyRequests:
+        class HTTPError(Exception):
+            def __init__(self, response=None):
+                super().__init__("http error")
+                self.response = response
+
+        class RequestException(Exception):
+            pass
+
+    dummy = DummyRequests()
+    if response is not None:
+        dummy.get = mock.Mock(return_value=response)
+        if status_exception:
+            def raise_error(self):
+                raise dummy.HTTPError(response=self)  # type: ignore[misc]
+
+            response.raise_for_status = raise_error.__get__(response, response.__class__)  # type: ignore[attr-defined]
+        else:
+            response.raise_for_status = lambda self=response: None  # type: ignore[assignment]
+    else:
+        dummy.get = mock.Mock()
+    return dummy
 
 
 if __name__ == "__main__":

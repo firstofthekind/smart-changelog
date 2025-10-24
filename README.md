@@ -30,7 +30,8 @@ smart-changelog update [--dry-run] [--verbose] [--ai] [--ticket TICKETID]
 | Variable | Purpose |
 | --- | --- |
 | `JIRA_URL` | Base URL to your Jira instance (e.g. `https://yourcompany.atlassian.net`). |
-| `JIRA_TOKEN` | Jira API token with read access. |
+| `JIRA_TOKEN` | (Optional) Jira bearer token with read access. |
+| `JIRA_EMAIL` / `JIRA_API_TOKEN` | Alternative to `JIRA_TOKEN`; supply your Atlassian email plus API token for Basic auth. |
 | `OPENAI_API_KEY` | Optional API key for description enrichment. |
 | `CI_COMMIT_AUTHOR` / `GIT_AUTHOR_NAME` | Used to attribute changelog entries. |
 | `CI_COMMIT_BRANCH`, `GITHUB_REF_NAME`, etc. | Used to determine the target branch. |
@@ -59,9 +60,18 @@ jobs:
         with:
           python-version: 3.12
       - name: Install Smart-Changelog
-        run: pip install smart-changelog
+        run: |
+          pip install .
+          rm -rf build smart_changelog.egg-info
       - name: Run Smart-Changelog
-        run: smart-changelog update
+        env:
+          JIRA_URL: ${{ secrets.JIRA_URL }}
+          JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          SMART_CHANGELOG_SKIP_COMMIT=1 smart-changelog update
       - name: Commit and push
         run: |
           git config user.email "bot@company.com"
@@ -80,8 +90,8 @@ update_changelog:
   stage: changelog
   image: python:3.12
   script:
-    - pip install smart-changelog
-    - smart-changelog update
+    - pip install .
+    - SMART_CHANGELOG_SKIP_COMMIT=1 smart-changelog update
     - git config user.email "bot@company.com"
     - git config user.name "SmartChangelog Bot"
     - git add CHANGELOG.md

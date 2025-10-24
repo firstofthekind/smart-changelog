@@ -10,6 +10,8 @@ permissions:
 jobs:
   changelog:
     runs-on: ubuntu-latest
+    environment:
+      name: main
     steps:
       - uses: actions/checkout@v4
       - name: Setup Python
@@ -28,6 +30,10 @@ jobs:
           JIRA_URL_VAR: ${{ vars.JIRA_URL }}
           JIRA_TOKEN_VAR: ${{ vars.JIRA_TOKEN }}
           OPENAI_API_KEY_VAR: ${{ vars.OPENAI_API_KEY }}
+          JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
+          JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+          JIRA_EMAIL_VAR: ${{ vars.JIRA_EMAIL }}
+          JIRA_API_TOKEN_VAR: ${{ vars.JIRA_API_TOKEN }}
         run: |
           if [ -f .env ]; then
             set -a
@@ -37,8 +43,14 @@ jobs:
           export JIRA_URL="${JIRA_URL:-$JIRA_URL_VAR}"
           export JIRA_TOKEN="${JIRA_TOKEN:-$JIRA_TOKEN_VAR}"
           export OPENAI_API_KEY="${OPENAI_API_KEY:-$OPENAI_API_KEY_VAR}"
-          if [ -z "$JIRA_URL" ] || [ -z "$JIRA_TOKEN" ]; then
-            echo "JIRA_URL or JIRA_TOKEN not set" >&2
+          export JIRA_EMAIL="${JIRA_EMAIL:-$JIRA_EMAIL_VAR}"
+          export JIRA_API_TOKEN="${JIRA_API_TOKEN:-$JIRA_API_TOKEN_VAR}"
+          if [ -z "$JIRA_URL" ]; then
+            echo "JIRA_URL not set" >&2
+            exit 1
+          fi
+          if [ -z "$JIRA_TOKEN" ] && { [ -z "$JIRA_EMAIL" ] || [ -z "$JIRA_API_TOKEN" ]; }; then
+            echo "Jira credentials not set (provide JIRA_TOKEN or JIRA_EMAIL/JIRA_API_TOKEN)" >&2
             exit 1
           fi
           SMART_CHANGELOG_SKIP_COMMIT=1 smart-changelog update
