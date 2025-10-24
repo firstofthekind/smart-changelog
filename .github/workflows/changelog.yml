@@ -37,6 +37,10 @@ jobs:
           export JIRA_URL="${JIRA_URL:-$JIRA_URL_VAR}"
           export JIRA_TOKEN="${JIRA_TOKEN:-$JIRA_TOKEN_VAR}"
           export OPENAI_API_KEY="${OPENAI_API_KEY:-$OPENAI_API_KEY_VAR}"
+          if [ -z "$JIRA_URL" ] || [ -z "$JIRA_TOKEN" ]; then
+            echo "JIRA_URL or JIRA_TOKEN not set" >&2
+            exit 1
+          fi
           SMART_CHANGELOG_SKIP_COMMIT=1 smart-changelog update
       - name: Commit and push
         env:

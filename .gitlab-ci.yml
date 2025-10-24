@@ -13,6 +13,8 @@ update_changelog:
           . ./.env
           set +a
         fi
+        : "${JIRA_URL:?JIRA_URL must be set}"
+        : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
         SMART_CHANGELOG_SKIP_COMMIT=1 smart-changelog update
     - git config user.email "bot@company.com"
     - git config user.name "SmartChangelog Bot"
