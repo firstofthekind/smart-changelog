@@ -297,13 +297,7 @@ def _ensure_version_block(content: str, version_heading: str, date_str: str) -> 
     if version_heading in content:
         return content, False
 
-    block = (
-        f"{version_heading}\n"
-        f"_Last updated: {date_str}_\n\n"
-        "### 🧩 New Features\n\n"
-        "### 🐛 Bug Fixes\n\n"
-        "### ⚙️ Changes\n"
-    )
+    block = f"{version_heading}\n_Last updated: {date_str}_\n\n"
 
     unreleased_pattern = re.compile(r"## \[Unreleased\].*?(?=\n## |\Z)", re.DOTALL)
     match = unreleased_pattern.search(content)
