@@ -264,6 +264,8 @@ class RunUpdateIntegrationTests(unittest.TestCase):
         ), mock.patch.object(
             updater, "enhance_description", side_effect=lambda title, _: f"AI:{title}"
         ) as enhance_mock, mock.patch.object(
+            updater, "suggest_category", return_value="feature"
+        ) as category_mock, mock.patch.object(
             updater, "_maybe_commit_and_push"
         ), mock.patch.object(
             updater, "_git_output", side_effect=fake_git_output
@@ -271,6 +273,7 @@ class RunUpdateIntegrationTests(unittest.TestCase):
             updater.run_update(dry_run=False, use_ai=True, forced_ticket=None, verbose=False)
 
         enhance_mock.assert_called()
+        category_mock.assert_called()
         content = Path("CHANGELOG.md").read_text(encoding="utf-8")
         self.assertIn("AI:Initial", content)
 
@@ -323,6 +326,8 @@ class RunUpdateIntegrationTests(unittest.TestCase):
         ), mock.patch.object(
             updater, "enhance_description", side_effect=lambda title, _: f"AI:{title}"
         ) as enhance_mock, mock.patch.object(
+            updater, "suggest_category", return_value="fix"
+        ) as category_mock, mock.patch.object(
             updater, "_maybe_commit_and_push"
         ) as commit_mock, mock.patch.object(
             updater, "_git_output", side_effect=fake_git_output
@@ -334,6 +339,7 @@ class RunUpdateIntegrationTests(unittest.TestCase):
         self.assertIn("CHANGE-fedcba1", content)
         self.assertIn("AI:fix: address issue", content)
         enhance_mock.assert_called()
+        category_mock.assert_called()
 
     def test_run_update_dry_run_outputs_preview(self) -> None:
         def fake_git_output(cmd):
@@ -411,7 +417,9 @@ class AdditionalHelperTests(unittest.TestCase):
 
         with mock.patch.object(updater, "_git_output", return_value=log_output), mock.patch.object(
             updater, "enhance_description", side_effect=lambda title, _: f"AI:{title}"
-        ):
+        ), mock.patch.object(
+            updater, "suggest_category", side_effect=["feature", "fix"]
+        ) as category_mock:
             contexts = updater._contexts_from_commit_history(set(), use_ai=True, limit=10)
 
         self.assertEqual(len(contexts), 2)
@@ -419,6 +427,32 @@ class AdditionalHelperTests(unittest.TestCase):
         self.assertIn("CHANGE-abcdef1", ids)
         self.assertIn("CHANGE-bcdefa2", ids)
         self.assertTrue(all(ctx.title.startswith("AI:") for ctx in contexts))
+        self.assertEqual(category_mock.call_count, 2)
+        self.assertIn(contexts[0].category, {"feature", "fix"})
+        self.assertIn(contexts[1].category, {"feature", "fix"})
+
+    def test_resolve_category_uses_ai_override(self) -> None:
+        with mock.patch.object(updater, "suggest_category", return_value="fix") as category_mock:
+            category = updater._resolve_category(
+                "feat: add workflow",
+                use_ai=True,
+                ticket_title="Fix production crash",
+                ticket_labels=["bug"],
+            )
+
+        self.assertEqual(category, "fix")
+        category_mock.assert_called_once()
+
+    def test_resolve_category_falls_back_to_commit(self) -> None:
+        with mock.patch.object(updater, "suggest_category", return_value=None) as category_mock:
+            category = updater._resolve_category(
+                "feat: add api",
+                use_ai=True,
+                ticket_title="Introduce new API",
+            )
+
+        self.assertEqual(category, "feature")
+        category_mock.assert_called_once()
 
     def test_read_changelog_bootstraps(self) -> None:
         temp_path = Path(self.tmpdir.name) / "NEW_CHANGELOG.md"

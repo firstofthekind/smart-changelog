@@ -21,7 +21,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency fallback
     Template = None  # type: ignore[assignment]
 
-from .ai_helper import enhance_description
+from .ai_helper import enhance_description, suggest_category
 from .jira_client import get_ticket_summary
 
 LOGGER = logging.getLogger(__name__)
@@ -258,10 +258,17 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
         if use_ai:
             LOGGER.info("Using OpenAI to enhance title for %s", ticket_id)
             title = enhance_description(title, ticket_id)
+        category = _resolve_category(
+            commit_title,
+            use_ai=use_ai,
+            ticket_title=title,
+            ticket_labels=jira_summary.get("labels"),
+            ticket_status=jira_summary.get("status"),
+        )
         contexts.append(
             UpdateContext(
                 ticket_id=ticket_id,
-                category=_categorize(commit_title),
+                category=category,
                 title=title,
                 author=author,
                 date=date_str,
@@ -276,10 +283,17 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
             if use_ai:
                 LOGGER.info("Using OpenAI to enhance fallback title for %s", fallback_id)
                 fallback_title = enhance_description(fallback_title, fallback_id)
+            fallback_category = _resolve_category(
+                commit_title,
+                use_ai=use_ai,
+                ticket_title=fallback_title,
+                ticket_labels=None,
+                ticket_status=None,
+            )
             fallback_contexts = [
                 UpdateContext(
                     ticket_id=fallback_id,
-                    category=_categorize(commit_title),
+                    category=fallback_category,
                     title=fallback_title,
                     author=author,
                     date=date_str,
@@ -390,6 +404,59 @@ def _categorize(commit_title: str) -> str:
     if first_word.startswith("refactor") or "refactor:" in title_lower or "change" in title_lower:
         return "change"
     return "change"
+
+
+def _categorize_from_labels(labels: Optional[List[str]]) -> Optional[str]:
+    if not labels:
+        return None
+
+    for label in labels:
+        normalized = label.lower()
+        if "bug" in normalized or normalized.startswith("fix"):
+            return "fix"
+        if "feature" in normalized or normalized.startswith("feat"):
+            return "feature"
+        if any(token in normalized for token in ["chore", "maintenance", "refactor", "doc", "change", "improv", "enhanc"]):
+            return "change"
+    return None
+
+
+def _resolve_category(
+    commit_title: str,
+    *,
+    use_ai: bool,
+    ticket_title: Optional[str] = None,
+    ticket_labels: Optional[List[str]] = None,
+    ticket_status: Optional[str] = None,
+) -> str:
+    base_category = _categorize(commit_title)
+
+    label_category = _categorize_from_labels(ticket_labels)
+    if label_category:
+        base_category = label_category
+
+    if not use_ai:
+        return base_category
+
+    context_parts: List[str] = []
+    if ticket_title:
+        context_parts.append(f"Ticket title: {ticket_title}")
+    if commit_title:
+        context_parts.append(f"Commit title: {commit_title}")
+    if ticket_status:
+        context_parts.append(f"Ticket status: {ticket_status}")
+    if ticket_labels:
+        context_parts.append(f"Labels: {', '.join(ticket_labels)}")
+
+    if not context_parts and commit_title:
+        context_parts.append(commit_title)
+
+    context_blob = "\n".join(context_parts)
+    ai_category = suggest_category(context_blob) if context_blob else None
+    if ai_category in SECTION_HEADINGS:
+        return ai_category
+
+    return base_category
 
 
 def _detect_author() -> str:
@@ -518,10 +585,16 @@ def _contexts_from_commit_history(existing_ids: Set[str], use_ai: bool, limit: i
             break
 
         title = subject.strip() or full_sha[:12]
-        category = _categorize(subject)
         if use_ai:
             LOGGER.info("Using OpenAI to enhance commit title for %s", ticket_id)
             title = enhance_description(title, ticket_id)
+        category = _resolve_category(
+            subject,
+            use_ai=use_ai,
+            ticket_title=title,
+            ticket_labels=None,
+            ticket_status=None,
+        )
 
         new_contexts.append(
             UpdateContext(

@@ -5,7 +5,7 @@ Automate changelog maintenance across GitHub Actions and GitLab CI pipelines wit
 ## Why Smart-Changelog?
 - ✅ One canonical `CHANGELOG.md` managed by CI to avoid merge conflicts
 - 🔗 Pulls ticket metadata directly from Jira
-- 🤖 Optional OpenAI enrichment for polished descriptions
+- 🤖 Optional OpenAI enrichment for polished descriptions and smarter categorisation
 - 🔁 Idempotent updates keyed off ticket IDs
 - 🛠️ Drop-in for any repository (Java, Kotlin, Python, you name it)
 
@@ -23,7 +23,7 @@ smart-changelog update [--dry-run] [--verbose] [--ai] [--ticket TICKETID]
 ### Options
 - `--dry-run`: Print the updated changelog instead of writing it.
 - `--verbose`: Enable debug logging.
-- `--ai`: Allow OpenAI (`gpt-4o-mini`) to refine Jira summaries when `OPENAI_API_KEY` is configured.
+- `--ai`: Allow OpenAI (`gpt-4o-mini`) to refine Jira summaries and suggest categories when `OPENAI_API_KEY` is configured.
 - `--ticket`: Force a specific ticket ID. Useful for backfills or hotfixes.
 
 ## Environment Variables
@@ -32,7 +32,7 @@ smart-changelog update [--dry-run] [--verbose] [--ai] [--ticket TICKETID]
 | `JIRA_URL` | Base URL to your Jira instance (e.g. `https://yourcompany.atlassian.net`). |
 | `JIRA_TOKEN` | (Optional) Jira bearer token with read access. |
 | `JIRA_EMAIL` / `JIRA_API_TOKEN` | Alternative to `JIRA_TOKEN`; supply your Atlassian email plus API token for Basic auth. |
-| `OPENAI_API_KEY` | Optional API key for description enrichment. |
+| `OPENAI_API_KEY` | Optional API key for description enrichment and category suggestions. |
 | `SMART_CHANGELOG_TEMPLATE` | Optional path to a custom Jinja2 template for version sections. |
 | `CI_COMMIT_AUTHOR` / `GIT_AUTHOR_NAME` | Used to attribute changelog entries. |
 | `CI_COMMIT_BRANCH`, `GITHUB_REF_NAME`, etc. | Used to determine the target branch. |
@@ -52,8 +52,8 @@ version:
 
 ## How It Works
 1. Detect the latest commit or merge title and extract the Jira ticket (pattern `[A-Z]+-\d+`).
-2. Determine the change type (`feat`, `fix`, `chore`, `refactor`) to target the right section.
-3. Fetch ticket details from Jira and optionally enrich them via OpenAI.
+2. Determine the change type (`feat`, `fix`, `chore`, `refactor`) to target the right section (AI can override when enabled).
+3. Fetch ticket details from Jira and optionally enrich summaries / categories via OpenAI.
 4. Update `CHANGELOG.md` under the current manifest version section using a template (default or custom).
 5. Stage, commit, and push the changelog if changes are found (skip when `--dry-run`).
 
