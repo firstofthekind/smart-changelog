@@ -18,7 +18,7 @@ _Last updated: 2025-10-26_
 ### ⚙️ Changes
 
 
-- testt bug (FOK-5, Viacheslav Liashenko, 2025-10-26)
+- FOK-5 - Test adding bug to the changelog (FOK-5, Viacheslav Liashenko, 2025-10-26)
 
 
 
