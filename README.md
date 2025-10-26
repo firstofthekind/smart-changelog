@@ -9,6 +9,7 @@ Automate changelog maintenance across GitHub Actions and GitLab CI pipelines wit
 - 🔁 Idempotent updates keyed off ticket IDs
 - 🛠️ Drop-in for any repository (Java, Kotlin, Python, you name it)
 
+
 ## Installation
 ```bash
 pip install smart-changelog
