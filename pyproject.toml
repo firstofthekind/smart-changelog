@@ -39,4 +39,4 @@ Issues = "https://github.com/viacheslavliashenko/smart-changelog/issues"
 smart-changelog = "smart_changelog.cli:main"
 
 [tool.setuptools.package-data]
-smart_changelog = ["templates/*.md"]
+smart_changelog = ["templates/*.md", "templates/*.j2", "templates/*.md.j2"]
