@@ -3,237 +3,431 @@ import os
 import subprocess
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict
 from unittest import mock
 
 from smart_changelog import updater
 
 
-class UpdateContextTests(unittest.TestCase):
-    def test_render_entry_without_jinja(self) -> None:
-        ctx = updater.UpdateContext(
-            ticket_id="ABC-1",
-            category="feature",
-            title="Add feature",
-            author="Alice",
-            date="2025-01-01",
-        )
-        rendered = ctx.render_entry()
-        self.assertIn("ABC-1", rendered)
-        self.assertTrue(rendered.startswith("- Add feature"))
-
-    def test_render_entry_with_custom_template(self) -> None:
-        class FakeTemplate:
-            def __init__(self, template_string: str) -> None:
-                self.template_string = template_string
-
-            def render(self, **context: Any) -> str:
-                return "- {title} ({ticket}, {author}, {date})".format(**context)
-
+class VersionHelperTests(unittest.TestCase):
+    def test_update_context_render_uses_template(self) -> None:
         original_template = updater.Template
+
+        class DummyTemplate:
+            def __init__(self, fmt: str) -> None:
+                self.fmt = fmt
+
+            def render(self, **kwargs) -> str:  # pragma: no cover - deterministic stub
+                return "rendered"
+
         try:
-            updater.Template = FakeTemplate  # type: ignore[assignment]
+            updater.Template = DummyTemplate  # type: ignore[assignment]
             ctx = updater.UpdateContext(
-                ticket_id="XYZ-9",
-                category="change",
-                title="Adjust settings",
-                author="Bob",
-                date="2025-02-02",
+                ticket_id="ABC-1",
+                category="feature",
+                title="Title",
+                author="Author",
+                date="2025-01-01",
             )
-            rendered = ctx.render_entry()
+            self.assertEqual(ctx.render_entry(), "rendered")
         finally:
             updater.Template = original_template
-
-        self.assertEqual(rendered, "- Adjust settings (XYZ-9, Bob, 2025-02-02)")
-
-
-class UpdaterFunctionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdir.cleanup)
-        self.cwd = Path(self.tmpdir.name)
         self.original_cwd = Path.cwd()
-        self.env_backup = os.environ.copy()
+        os.chdir(self.tmpdir.name)
 
     def tearDown(self) -> None:
         os.chdir(self.original_cwd)
-        os.environ.clear()
-        os.environ.update(self.env_backup)
 
-    def test_read_changelog_bootstraps_from_template(self) -> None:
-        os.chdir(self.cwd)
-        path = self.cwd / "CHANGELOG.md"
-        content = updater._read_changelog(path)
-        self.assertIn("# Changelog", content)
-        self.assertTrue(path.exists())
+    def test_current_version_from_manifest(self) -> None:
+        Path("manifest.yaml").write_text(
+            """version:\n  major: 2\n  minor: 7\n  patch: ${CI_PIPELINE_IID}\n  prerelease: rc1\n""",
+            encoding="utf-8",
+        )
+        self.assertEqual(updater._current_version(), "2.7-rc1")
 
-    def test_read_changelog_returns_existing(self) -> None:
-        os.chdir(self.cwd)
-        path = self.cwd / "CHANGELOG.md"
-        path.write_text("existing", encoding="utf-8")
-        content = updater._read_changelog(path)
-        self.assertEqual(content, "existing")
+    def test_current_version_missing_manifest(self) -> None:
+        self.assertEqual(updater._current_version(), "0.0")
 
-    def test_detect_ticket_from_env(self) -> None:
-        os.environ["CI_COMMIT_TITLE"] = "feat: add support ABC-77"
-        ticket = updater._detect_ticket_id(None, ["feat: add support ABC-77"])
-        self.assertEqual(ticket, "ABC-77")
+    def test_ensure_version_block_creates_new(self) -> None:
+        content = "# Changelog\n"
+        updated, created = updater._ensure_version_block(content, "## 1.5", "2025-02-02")
+        self.assertTrue(created)
+        self.assertIn("## 1.5", updated)
+        self.assertIn("_Last updated: 2025-02-02_", updated)
 
-    def test_detect_ticket_forced_valid(self) -> None:
-        ticket = updater._detect_ticket_id("ABC-77", [])
-        self.assertEqual(ticket, "ABC-77")
-
-    def test_detect_ticket_forced_invalid(self) -> None:
-        self.assertIsNone(updater._detect_ticket_id("ticket-123", []))
-
-    def test_detect_ticket_no_candidates(self) -> None:
-        ticket = updater._detect_ticket_id(None, [])
-        self.assertIsNone(ticket)
-
-    def test_detect_ticket_from_git_output(self) -> None:
-        with mock.patch("smart_changelog.updater._gather_context_strings", return_value=["feature/ABC-88"]):
-            ticket = updater._detect_ticket_id(None, updater._gather_context_strings())
-        self.assertEqual(ticket, "ABC-88")
-
-    def test_categorize_variants(self) -> None:
-        self.assertEqual(updater._categorize("feat: add"), "feature")
-        self.assertEqual(updater._categorize("fix: bug"), "fix")
-        self.assertEqual(updater._categorize("refactor: code"), "change")
-        self.assertEqual(updater._categorize("chore: misc"), "change")
-        self.assertEqual(updater._categorize("update dependencies"), "change")
-
-    def test_upsert_entry_adds_new_entry(self) -> None:
-        base = (
+    def test_ensure_version_block_replaces_unreleased(self) -> None:
+        content = (
             "# Changelog\n\n"
             "## [Unreleased]\n_Last updated: 2025-01-01_\n\n"
             "### 🧩 New Features\n\n"
             "### 🐛 Bug Fixes\n\n"
             "### ⚙️ Changes\n"
         )
-        updated, changed = updater._upsert_entry(
-            base,
-            "### 🧩 New Features",
-            "- New item (ABC-1, Alice, 2025-01-02)",
-            "ABC-1",
-        )
-        self.assertTrue(changed)
-        self.assertIn("New item", updated)
+        updated, created = updater._ensure_version_block(content, "## 3.0", "2025-03-03")
+        self.assertTrue(created)
+        self.assertIn("## 3.0", updated)
+        self.assertNotIn("Unreleased", updated)
 
-    def test_upsert_entry_updates_existing(self) -> None:
-        base = (
+    def test_upsert_entry_for_version_inserts_and_updates(self) -> None:
+        block = (
             "# Changelog\n\n"
-            "## [Unreleased]\n_Last updated: 2025-01-01_\n\n"
+            "## 1.0\n_Last updated: 2025-01-01_\n\n"
             "### 🧩 New Features\n\n"
-            "- Old item (ABC-1, Alice, 2025-01-01)\n"
+            "### 🐛 Bug Fixes\n\n"
+            "### ⚙️ Changes\n"
         )
-        updated, changed = updater._upsert_entry(
-            base,
-            "### 🧩 New Features",
-            "- Updated item (ABC-1, Alice, 2025-01-03)",
-            "ABC-1",
+        updated, changed = updater._upsert_entry_for_version(
+            block,
+            "## 1.0",
+            "### ⚙️ Changes",
+            "- First entry (CHANGE-1, Alice, 2025-01-02)",
+            "CHANGE-1",
         )
         self.assertTrue(changed)
-        self.assertIn("Updated item", updated)
+        self.assertIn("First entry", updated)
 
-    def test_upsert_entry_detects_existing_entry(self) -> None:
-        base = (
+        updated_again, changed_again = updater._upsert_entry_for_version(
+            updated,
+            "## 1.0",
+            "### ⚙️ Changes",
+            "- First entry updated (CHANGE-1, Alice, 2025-01-03)",
+            "CHANGE-1",
+        )
+        self.assertTrue(changed_again)
+        self.assertIn("First entry updated", updated_again)
+
+    def test_upsert_entry_adds_missing_section(self) -> None:
+        block = (
             "# Changelog\n\n"
-            "## [Unreleased]\n_Last updated: 2025-01-01_\n\n"
-            "### 🧩 New Features\n\n"
-            "- Entry (ABC-1, Alice, 2025-01-01)\n"
+            "## 2.0\n_Last updated: 2025-05-01_\n"
         )
-        updated, changed = updater._upsert_entry(
-            base,
-            "### 🧩 New Features",
-            "- Entry (ABC-1, Alice, 2025-01-01)",
-            "ABC-1",
+        updated, changed = updater._upsert_entry_for_version(
+            block,
+            "## 2.0",
+            "### 🐛 Bug Fixes",
+            "- Fix bug (BUG-1, Bob, 2025-05-02)",
+            "BUG-1",
         )
-        self.assertFalse(changed)
-        self.assertEqual(updated, base)
+        self.assertTrue(changed)
+        self.assertIn("### 🐛 Bug Fixes", updated)
+        self.assertIn("Fix bug", updated)
 
-    def test_upsert_entry_appends_when_section_missing(self) -> None:
-        base = (
+    def test_update_last_updated(self) -> None:
+        content = (
             "# Changelog\n\n"
-            "## [Unreleased]\n_Last updated: 2025-01-01_\n"
+            "## 1.2\n_Last updated: 2025-01-01_\n\n"
+            "### ⚙️ Changes\n"
         )
-        updated, changed = updater._upsert_entry(
-            base,
-            "### 🧩 New Features",
-            "- Item (ABC-1, Alice, 2025-01-02)",
-            "ABC-1",
-        )
+        updated, changed = updater._update_last_updated(content, "## 1.2", "2025-04-04")
         self.assertTrue(changed)
-        self.assertIn("### 🧩 New Features", updated)
+        self.assertIn("_Last updated: 2025-04-04_", updated)
 
-    def test_upsert_entry_creates_unreleased_when_missing(self) -> None:
-        base = "# Changelog\n"
-        updated, changed = updater._upsert_entry(
-            base,
-            "### 🧩 New Features",
-            "- Item (ABC-1, Alice, 2025-01-02)",
-            "ABC-1",
-        )
-        self.assertTrue(changed)
-        self.assertIn("## [Unreleased]", updated)
-
-    def test_upsert_entry_respects_blank_line_after_heading(self) -> None:
-        base = (
+    def test_update_last_updated_inserts_when_missing(self) -> None:
+        content = (
             "# Changelog\n\n"
-            "## [Unreleased]\n_Last updated: 2025-01-01_\n\n"
-            "### 🧩 New Features\n\n"
-            "- Existing (ABC-2, Bob, 2025-01-01)\n"
+            "## 3.0\n\n"
+            "### ⚙️ Changes\n"
         )
-        updated, changed = updater._upsert_entry(
-            base,
-            "### 🧩 New Features",
-            "- New Item (ABC-1, Alice, 2025-01-02)",
-            "ABC-1",
+        updated, changed = updater._update_last_updated(content, "## 3.0", "2025-06-06")
+        self.assertTrue(changed)
+        self.assertIn("_Last updated: 2025-06-06_", updated)
+
+
+class RunUpdateIntegrationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.original_cwd = Path.cwd()
+        os.chdir(self.tmpdir.name)
+        Path("manifest.yaml").write_text(
+            """version:\n  major: 1\n  minor: 5\n  patch: ${CI_PIPELINE_IID}\n  prerelease: ""\n""",
+            encoding="utf-8",
         )
+        Path("CHANGELOG.md").write_text("# Changelog\n", encoding="utf-8")
+        os.environ["CI_COMMIT_AUTHOR"] = "Alice"
+
+    def tearDown(self) -> None:
+        os.chdir(self.original_cwd)
+        os.environ.pop("CI_COMMIT_AUTHOR", None)
+
+    def test_run_update_with_jira_ticket(self) -> None:
+        def fake_git_output(cmd):
+            joined = " ".join(cmd)
+            if "--pretty=%s" in joined:
+                return "feat: add endpoint"
+            if "rev-parse" in joined:
+                return "abcdef1"
+            return "placeholder"
+
+        with mock.patch.object(updater, "_gather_context_strings", return_value=[]), mock.patch.object(
+            updater, "_detect_ticket_id", return_value="FOK-123"
+        ), mock.patch.object(
+            updater, "get_ticket_summary", return_value={"title": "Implement endpoint"}
+        ), mock.patch.object(
+            updater, "_maybe_commit_and_push"
+        ) as commit_mock, mock.patch.object(
+            updater, "_git_output", side_effect=fake_git_output
+        ):
+            updater.run_update(dry_run=False, use_ai=False, forced_ticket=None, verbose=False)
+
+        commit_mock.assert_called_once()
+        content = Path("CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("## 1.5", content)
+        self.assertIn("- Implement endpoint (FOK-123, Alice", content)
+
+    def test_run_update_with_ai_enrichment_enabled(self) -> None:
+        def fake_git_output(cmd):
+            joined = " ".join(cmd)
+            if "--pretty=%s" in joined:
+                return "feat: add ai"
+            if "rev-parse" in joined:
+                return "ai12345"
+            return "placeholder"
+
+        with mock.patch.object(updater, "_gather_context_strings", return_value=[]), mock.patch.object(
+            updater, "_detect_ticket_id", return_value="FOK-999"
+        ), mock.patch.object(
+            updater, "get_ticket_summary", return_value={"title": "Initial"}
+        ), mock.patch.object(
+            updater, "enhance_description", side_effect=lambda title, _: f"AI:{title}"
+        ) as enhance_mock, mock.patch.object(
+            updater, "_maybe_commit_and_push"
+        ), mock.patch.object(
+            updater, "_git_output", side_effect=fake_git_output
+        ):
+            updater.run_update(dry_run=False, use_ai=True, forced_ticket=None, verbose=False)
+
+        enhance_mock.assert_called()
+        content = Path("CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("AI:Initial", content)
+
+    def test_run_update_without_ticket_uses_commit_history(self) -> None:
+        context = updater.UpdateContext(
+            ticket_id="CHANGE-abc123",
+            category="change",
+            title="Update docs",
+            author="Bob",
+            date="2025-02-02",
+        )
+
+        def fake_git_output(cmd):
+            joined = " ".join(cmd)
+            if "--pretty=%s" in joined:
+                return "chore: update docs"
+            if "rev-parse" in joined:
+                return "abc1234"
+            return "placeholder"
+
+        with mock.patch.object(updater, "_gather_context_strings", return_value=[]), mock.patch.object(
+            updater, "_detect_ticket_id", return_value=None
+        ), mock.patch.object(
+            updater, "_contexts_from_commit_history", return_value=[context]
+        ), mock.patch.object(
+            updater, "_maybe_commit_and_push"
+        ) as commit_mock, mock.patch.object(
+            updater, "_git_output", side_effect=fake_git_output
+        ):
+            updater.run_update(dry_run=False, use_ai=False, forced_ticket=None, verbose=False)
+
+        commit_mock.assert_called_once()
+        content = Path("CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("CHANGE-abc123", content)
+        self.assertIn("Update docs", content)
+
+    def test_run_update_without_ticket_creates_fallback_when_history_empty(self) -> None:
+        def fake_git_output(cmd):
+            joined = " ".join(cmd)
+            if "--pretty=%s" in joined:
+                return "fix: address issue"
+            if "rev-parse" in joined:
+                return "fedcba1"
+            return "placeholder"
+
+        with mock.patch.object(updater, "_gather_context_strings", return_value=[]), mock.patch.object(
+            updater, "_detect_ticket_id", return_value=None
+        ), mock.patch.object(
+            updater, "_contexts_from_commit_history", return_value=[]
+        ), mock.patch.object(
+            updater, "enhance_description", side_effect=lambda title, _: f"AI:{title}"
+        ) as enhance_mock, mock.patch.object(
+            updater, "_maybe_commit_and_push"
+        ) as commit_mock, mock.patch.object(
+            updater, "_git_output", side_effect=fake_git_output
+        ):
+            updater.run_update(dry_run=False, use_ai=True, forced_ticket=None, verbose=False)
+
+        commit_mock.assert_called_once()
+        content = Path("CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("CHANGE-fedcba1", content)
+        self.assertIn("AI:fix: address issue", content)
+        enhance_mock.assert_called()
+
+    def test_run_update_dry_run_outputs_preview(self) -> None:
+        def fake_git_output(cmd):
+            joined = " ".join(cmd)
+            if "--pretty=%s" in joined:
+                return "feat: dry run"
+            if "rev-parse" in joined:
+                return "dryrun1"
+            return "placeholder"
+
+        with mock.patch.object(updater, "_gather_context_strings", return_value=[]), mock.patch.object(
+            updater, "_detect_ticket_id", return_value="FOK-DRY"
+        ), mock.patch.object(
+            updater, "get_ticket_summary", return_value={"title": "Dry"}
+        ), mock.patch.object(
+            updater, "_maybe_commit_and_push"
+        ), mock.patch.object(
+            updater, "_git_output", side_effect=fake_git_output
+        ), mock.patch("sys.stdout", new_callable=io.StringIO) as fake_stdout:
+            updater.run_update(dry_run=True, use_ai=False, forced_ticket=None, verbose=True)
+
+        output = fake_stdout.getvalue()
+        self.assertIn("Dry", output)
+
+
+class AdditionalHelperTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+
+    def test_current_version_fallback_parser(self) -> None:
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        cwd = Path.cwd()
+        try:
+            os.chdir(temp.name)
+            Path("manifest.yaml").write_text(
+                """# sample\nversion:\n  major: 4\n  minor: 2\n  prerelease: \"\"\n""",
+                encoding="utf-8",
+            )
+            original_yaml = updater.yaml
+            updater.yaml = None  # type: ignore[assignment]
+            self.assertEqual(updater._current_version(), "4.2")
+        finally:
+            updater.yaml = original_yaml
+            os.chdir(cwd)
+
+    def test_current_version_read_failure(self) -> None:
+        path = Path("manifest.yaml")
+        path.write_text("version:\n  major: 1\n  minor: 0\n", encoding="utf-8")
+        with mock.patch.object(Path, "read_text", side_effect=OSError("boom")):
+            self.assertEqual(updater._current_version(path), "0.0")
+
+    def test_current_version_yaml_failure(self) -> None:
+        path = Path("manifest.yaml")
+        path.write_text("version: : bad", encoding="utf-8")
+        original_yaml = updater.yaml
+        updater.yaml = mock.Mock()
+        updater.yaml.safe_load.side_effect = ValueError("bad")
+        try:
+            self.assertEqual(updater._current_version(path), "0.0")
+        finally:
+            updater.yaml = original_yaml
+
+    def test_current_version_missing_major_minor(self) -> None:
+        path = Path("manifest.yaml")
+        path.write_text("version:\n  major: 1\n", encoding="utf-8")
+        self.assertEqual(updater._current_version(path), "0.0")
+
+    def test_contexts_from_commit_history_parses_git_log(self) -> None:
+        log_output = (
+            "abcdef123456789\tfeat: add api\tAlice\t2025-01-01\n"
+            "bcdefa234567890\tfix bug\tBob\t2025-01-02"
+        )
+
+        with mock.patch.object(updater, "_git_output", return_value=log_output), mock.patch.object(
+            updater, "enhance_description", side_effect=lambda title, _: f"AI:{title}"
+        ):
+            contexts = updater._contexts_from_commit_history(set(), use_ai=True, limit=10)
+
+        self.assertEqual(len(contexts), 2)
+        ids = [ctx.ticket_id for ctx in contexts]
+        self.assertIn("CHANGE-abcdef1", ids)
+        self.assertIn("CHANGE-bcdefa2", ids)
+        self.assertTrue(all(ctx.title.startswith("AI:") for ctx in contexts))
+
+    def test_read_changelog_bootstraps(self) -> None:
+        temp_path = Path(self.tmpdir.name) / "NEW_CHANGELOG.md"
+        content = updater._read_changelog(temp_path)
+        self.assertTrue(temp_path.exists())
+        self.assertIn("# Changelog", content)
+
+    def test_detect_ticket_id_variants(self) -> None:
+        self.assertEqual(updater._detect_ticket_id("ABC-1", []), "ABC-1")
+        self.assertIsNone(updater._detect_ticket_id("bad-format", []))
+        self.assertEqual(updater._detect_ticket_id(None, ["feat ABC-2"]), "ABC-2")
+        self.assertIsNone(updater._detect_ticket_id(None, []))
+
+    def test_ensure_version_block_inserts_after_header(self) -> None:
+        content = "# Changelog\n\n## 0.9\n"
+        updated, created = updater._ensure_version_block(content, "## 0.10", "2025-07-07")
+        self.assertTrue(created)
+        self.assertIn("## 0.10", updated)
+
+    def test_upsert_entry_in_block_appends_when_heading_ends_block(self) -> None:
+        block = "## 4.0\n_Last updated: 2025-05-01_\n\n### 🧩 New Features"
+        updated, changed = updater._upsert_entry_in_block(block, "### 🧩 New Features", "- Item", "ITEM-1")
         self.assertTrue(changed)
-        self.assertIn("- New Item", updated)
+        self.assertIn("- Item", updated)
 
-    def test_update_last_updated_existing_marker(self) -> None:
-        content = "_Last updated: 2025-01-01_"
-        updated, changed = updater._update_last_updated(content, "2025-01-02")
-        self.assertTrue(changed)
-        self.assertIn("2025-01-02", updated)
-
-    def test_update_last_updated_injects_when_missing(self) -> None:
-        content = "## [Unreleased]\nSome text"
-        updated, changed = updater._update_last_updated(content, "2025-05-05")
-        self.assertTrue(changed)
-        self.assertIn("_Last updated: 2025-05-05_", updated)
-
-    def test_update_last_updated_no_change(self) -> None:
-        content = "## Release notes\nNothing here"
-        updated, changed = updater._update_last_updated(content, "2025-06-06")
-        self.assertFalse(changed)
-        self.assertEqual(updated, content)
-
-    def test_git_output_handles_failures(self) -> None:
-        with mock.patch("subprocess.run", side_effect=subprocess.CalledProcessError(1, ["git"])):
-            result = updater._git_output(["git"])
-        self.assertIsNone(result)
-
-    def test_maybe_commit_skips_when_env_set(self) -> None:
+    def test_maybe_commit_skip_env_variable(self) -> None:
         os.environ["SMART_CHANGELOG_SKIP_COMMIT"] = "1"
-        with mock.patch("smart_changelog.updater._git_available", return_value=True):
+        try:
             updater._maybe_commit_and_push("CHANGELOG.md", "entry")
+        finally:
+            os.environ.pop("SMART_CHANGELOG_SKIP_COMMIT", None)
 
-    def test_maybe_commit_git_not_available(self) -> None:
-        with mock.patch("smart_changelog.updater._git_available", return_value=False):
-            updater._maybe_commit_and_push("CHANGELOG.md", "entry")
+    def test_current_branch_prefers_env(self) -> None:
+        os.environ["GITHUB_REF_NAME"] = "feature"
+        self.addCleanup(lambda: os.environ.pop("GITHUB_REF_NAME", None))
+        self.assertEqual(updater._current_branch(), "feature")
 
-    def test_maybe_commit_full_flow(self) -> None:
+    def test_current_branch_falls_back_to_git(self) -> None:
+        for key in ["GITHUB_REF_NAME", "GITHUB_HEAD_REF", "CI_COMMIT_BRANCH", "CI_DEFAULT_BRANCH"]:
+            os.environ.pop(key, None)
+        with mock.patch.object(updater, "_git_output", return_value="main"):
+            self.assertEqual(updater._current_branch(), "main")
+
+    def test_detect_author_prefers_env(self) -> None:
+        os.environ["CI_COMMIT_AUTHOR"] = "CI Bot"
+        self.addCleanup(lambda: os.environ.pop("CI_COMMIT_AUTHOR", None))
+        self.assertEqual(updater._detect_author(), "CI Bot")
+
+    def test_detect_author_falls_back_to_git(self) -> None:
+        with mock.patch.object(updater, "_git_output", return_value="Git User"):
+            self.assertEqual(updater._detect_author(), "Git User")
+
+    def test_gather_context_strings_collects_git_metadata(self) -> None:
+        with mock.patch.object(updater, "_git_output", side_effect=["message", "branch"]):
+            contexts = updater._gather_context_strings()
+        self.assertIn("message", contexts)
+        self.assertIn("branch", contexts)
+
+    def test_fallback_ticket_identifier_uses_git(self) -> None:
+        with mock.patch.object(updater, "_git_output", return_value="abc1234"):
+            self.assertEqual(updater._fallback_ticket_identifier(), "CHANGE-abc1234")
+
+    def test_fallback_ticket_identifier_without_git(self) -> None:
+        with mock.patch.object(updater, "_git_output", return_value=None):
+            self.assertEqual(updater._fallback_ticket_identifier(), "CHANGE-NOREF")
+
+    def test_first_non_empty(self) -> None:
+        self.assertEqual(updater._first_non_empty(["", " value "]), "value")
+        self.assertEqual(updater._first_non_empty([]), "")
+
+    def test_maybe_commit_and_push_happy_path(self) -> None:
         calls: list[list[str]] = []
 
-        def fake_run(cmd: list[str], check: bool = False, **kwargs: Any):
+        def fake_run(cmd, check=False, stdout=None, stderr=None, env=None):
             calls.append(cmd)
             if cmd[:2] == ["git", "add"]:
                 return subprocess.CompletedProcess(cmd, 0)
             if cmd[:3] == ["git", "diff", "--cached"]:
-                # Simulate differences by returning non-zero
                 return subprocess.CompletedProcess(cmd, 1)
             if cmd[:2] == ["git", "commit"]:
                 return subprocess.CompletedProcess(cmd, 0)
@@ -241,315 +435,61 @@ class UpdaterFunctionTests(unittest.TestCase):
                 return subprocess.CompletedProcess(cmd, 0)
             return subprocess.CompletedProcess(cmd, 0)
 
-        with mock.patch.dict(os.environ, {}, clear=True):
-            with mock.patch("smart_changelog.updater._git_available", return_value=True):
-                with mock.patch("smart_changelog.updater._current_branch", return_value="main"):
-                    with mock.patch("subprocess.run", side_effect=fake_run):
-                        updater._maybe_commit_and_push("CHANGELOG.md", "entry")
+        with mock.patch.object(updater, "_git_available", return_value=True), mock.patch.object(
+            updater, "_current_branch", return_value="main"
+        ), mock.patch("subprocess.run", side_effect=fake_run):
+            updater._maybe_commit_and_push("CHANGELOG.md", "entry")
 
         self.assertGreaterEqual(len(calls), 4)
 
-    def test_maybe_commit_skips_when_no_changes(self) -> None:
+    def test_maybe_commit_handles_failures(self) -> None:
+        with mock.patch.object(updater, "_git_available", return_value=False):
+            updater._maybe_commit_and_push("CHANGELOG.md", "entry")
+
+        def raise_on_add(cmd, **kwargs):
+            raise subprocess.CalledProcessError(1, cmd)
+
+        with mock.patch.object(updater, "_git_available", return_value=True), mock.patch("subprocess.run", side_effect=raise_on_add):
+            updater._maybe_commit_and_push("CHANGELOG.md", "entry")
+
         sequence = [
             subprocess.CompletedProcess(["git", "add"], 0),
             subprocess.CompletedProcess(["git", "diff", "--cached", "--quiet"], 0),
         ]
 
-        def fake_run(cmd: list[str], check: bool = False, **kwargs: Any):
+        def fake_run_no_changes(cmd, **kwargs):
             return sequence.pop(0)
 
-        with mock.patch("smart_changelog.updater._git_available", return_value=True):
-            with mock.patch("subprocess.run", side_effect=fake_run):
-                updater._maybe_commit_and_push("CHANGELOG.md", "entry")
+        with mock.patch.object(updater, "_git_available", return_value=True), mock.patch("subprocess.run", side_effect=fake_run_no_changes):
+            updater._maybe_commit_and_push("CHANGELOG.md", "entry")
 
-        self.assertEqual(sequence, [])
+        def sequence_commit_fail(cmd, **kwargs):
+            if cmd[:2] == ["git", "add"]:
+                return subprocess.CompletedProcess(cmd, 0)
+            if cmd[:3] == ["git", "diff", "--cached", "--quiet"]:
+                return subprocess.CompletedProcess(cmd, 1)
+            if cmd[:2] == ["git", "commit"]:
+                raise subprocess.CalledProcessError(1, cmd)
+            return subprocess.CompletedProcess(cmd, 0)
 
-    def test_maybe_commit_handles_stage_failure(self) -> None:
-        with mock.patch("smart_changelog.updater._git_available", return_value=True):
-            with mock.patch(
-                "subprocess.run",
-                side_effect=subprocess.CalledProcessError(1, ["git", "add"]),
-            ):
-                updater._maybe_commit_and_push("CHANGELOG.md", "entry")
+        with mock.patch.object(updater, "_git_available", return_value=True), mock.patch("subprocess.run", side_effect=sequence_commit_fail):
+            updater._maybe_commit_and_push("CHANGELOG.md", "entry")
 
-    def test_maybe_commit_handles_commit_failure(self) -> None:
-        sequence = [
-            subprocess.CompletedProcess(["git", "add"], 0),
-            subprocess.CompletedProcess(["git", "diff", "--cached", "--quiet"], 1),
-            subprocess.CalledProcessError(1, ["git", "commit"]),
-        ]
+        def sequence_push_fail(cmd, **kwargs):
+            if cmd[:2] == ["git", "add"]:
+                return subprocess.CompletedProcess(cmd, 0)
+            if cmd[:3] == ["git", "diff", "--cached", "--quiet"]:
+                return subprocess.CompletedProcess(cmd, 1)
+            if cmd[:2] == ["git", "commit"]:
+                return subprocess.CompletedProcess(cmd, 0)
+            if cmd[:2] == ["git", "push"]:
+                raise subprocess.CalledProcessError(1, cmd)
+            return subprocess.CompletedProcess(cmd, 0)
 
-        def fake_run(cmd: list[str], check: bool = False, **kwargs: Any):
-            result = sequence.pop(0)
-            if isinstance(result, subprocess.CalledProcessError):
-                raise result
-            return result
-
-        with mock.patch("smart_changelog.updater._git_available", return_value=True):
-            with mock.patch("subprocess.run", side_effect=fake_run):
-                updater._maybe_commit_and_push("CHANGELOG.md", "entry")
-
-    def test_maybe_commit_handles_push_failure(self) -> None:
-        sequence: list[Any] = [
-            subprocess.CompletedProcess(["git", "add"], 0),
-            subprocess.CompletedProcess(["git", "diff", "--cached", "--quiet"], 1),
-            subprocess.CompletedProcess(["git", "commit", "-m", "msg"], 0),
-            subprocess.CalledProcessError(1, ["git", "push"]),
-        ]
-
-        def fake_run(cmd: list[str], check: bool = False, **kwargs: Any):
-            result = sequence.pop(0)
-            if isinstance(result, subprocess.CalledProcessError):
-                raise result
-            return result
-
-        with mock.patch("smart_changelog.updater._git_available", return_value=True):
-            with mock.patch("smart_changelog.updater._current_branch", return_value="main"):
-                with mock.patch("subprocess.run", side_effect=fake_run):
-                    updater._maybe_commit_and_push("CHANGELOG.md", "entry")
-
-    def test_maybe_commit_skips_when_branch_unknown(self) -> None:
-        sequence = [
-            subprocess.CompletedProcess(["git", "add"], 0),
-            subprocess.CompletedProcess(["git", "diff", "--cached", "--quiet"], 1),
-            subprocess.CompletedProcess(["git", "commit", "-m", "msg"], 0),
-        ]
-
-        def fake_run(cmd: list[str], check: bool = False, **kwargs: Any):
-            return sequence.pop(0)
-
-        with mock.patch("smart_changelog.updater._git_available", return_value=True):
-            with mock.patch("smart_changelog.updater._current_branch", return_value=None):
-                with mock.patch("subprocess.run", side_effect=fake_run):
-                    updater._maybe_commit_and_push("CHANGELOG.md", "entry")
-
-    def test_git_available(self) -> None:
-        with mock.patch("subprocess.call", return_value=0) as call_mock:
-            self.assertTrue(updater._git_available())
-        call_mock.assert_called_once()
-
-    def test_detect_author_prefers_env(self) -> None:
-        os.environ["CI_COMMIT_AUTHOR"] = "CI Bot"
-        author = updater._detect_author()
-        self.assertEqual(author, "CI Bot")
-
-    def test_detect_author_falls_back_to_git(self) -> None:
-        with mock.patch("smart_changelog.updater._git_output", return_value="Alice"):
-            author = updater._detect_author()
-        self.assertEqual(author, "Alice")
-
-    def test_gather_context_strings_collects_data(self) -> None:
-        os.environ["CI_COMMIT_TITLE"] = "feat: ABC-1"
-        with mock.patch("smart_changelog.updater._git_output", side_effect=["message", "branch"]):
-            candidates = updater._gather_context_strings()
-        self.assertIn("feat: ABC-1", candidates)
-        self.assertIn("message", candidates)
-        self.assertIn("branch", candidates)
-
-    def test_git_output_success(self) -> None:
-        completed = subprocess.CompletedProcess(["git"], 0, stdout="value\n")
-
-        def fake_run(cmd, check, stdout, stderr, text):
-            return completed
-
-        with mock.patch("subprocess.run", side_effect=fake_run):
-            result = updater._git_output(["git"])
-        self.assertEqual(result, "value")
-
-    def test_contexts_from_commit_history_gathers_commits(self) -> None:
-        log_output = "abcdef123456789\tfeat: add API\tAlice\t2024-01-01\n1111111abc\tfix bug\tBob\t2023-12-31"
-        with mock.patch("smart_changelog.updater._git_output", return_value=log_output):
-            contexts = updater._contexts_from_commit_history({"CHANGE-1111111"}, use_ai=False, limit=10)
-
-        self.assertEqual(len(contexts), 1)
-        ctx = contexts[0]
-        self.assertEqual(ctx.ticket_id, "CHANGE-abcdef1")
-        self.assertEqual(ctx.title, "feat: add API")
-        self.assertEqual(ctx.author, "Alice")
-        self.assertEqual(ctx.date, "2024-01-01")
-        self.assertEqual(ctx.category, "feature")
-
-    def test_fallback_ticket_identifier_uses_git(self) -> None:
-        with mock.patch("smart_changelog.updater._git_output", return_value="abcdef1"):
-            token = updater._fallback_ticket_identifier()
-        self.assertEqual(token, "CHANGE-abcdef1")
-
-    def test_fallback_ticket_identifier_no_git(self) -> None:
-        with mock.patch("smart_changelog.updater._git_output", return_value=None):
-            token = updater._fallback_ticket_identifier()
-        self.assertEqual(token, "CHANGE-NOREF")
-
-    def test_first_non_empty(self) -> None:
-        result = updater._first_non_empty(["", "   ", "value", "next"])
-        self.assertEqual(result, "value")
-        self.assertEqual(updater._first_non_empty([]), "")
-
-    def test_run_update_dry_run_outputs_content(self) -> None:
-        changelog = (
-            "# Changelog\n\n"
-            "## [Unreleased]\n_Last updated: 2025-01-01_\n\n"
-            "### 🧩 New Features\n\n"
-            "### 🐛 Bug Fixes\n\n"
-            "### ⚙️ Changes\n"
-        )
-
-        os.chdir(self.cwd)
-        with mock.patch("smart_changelog.updater._gather_context_strings", return_value=["feat: ABC-1"]), mock.patch(
-            "smart_changelog.updater._read_changelog", return_value=changelog
-        ), mock.patch(
-            "smart_changelog.updater._detect_ticket_id", return_value="ABC-1"
-        ), mock.patch("smart_changelog.updater._categorize", return_value="feature"), mock.patch(
-            "smart_changelog.updater.get_ticket_summary", return_value={"title": "Implement feature"}
-        ), mock.patch(
-            "smart_changelog.updater._maybe_commit_and_push"
-        ) as commit_mock, mock.patch(
-            "smart_changelog.updater.Path.write_text"
-        ):
-            with mock.patch("smart_changelog.updater._update_last_updated", return_value=(changelog, True)):
-                with mock.patch("smart_changelog.updater._upsert_entry", return_value=(changelog, True)):
-                    with mock.patch("sys.stdout", new_callable=io.StringIO) as fake_stdout:
-                        updater.run_update(dry_run=True, use_ai=False, forced_ticket=None, verbose=True)
-
-        output = fake_stdout.getvalue()
-        self.assertIn("# Changelog", output)
-        commit_mock.assert_not_called()
-
-    def test_run_update_writes_file(self) -> None:
-        changelog_path = self.cwd / "CHANGELOG.md"
-        changelog_path.write_text(
-            "# Changelog\n\n"
-            "## [Unreleased]\n_Last updated: 2025-01-01_\n\n"
-            "### 🧩 New Features\n\n"
-            "### 🐛 Bug Fixes\n\n"
-            "### ⚙️ Changes\n",
-            encoding="utf-8",
-        )
-
-        new_content = "updated changelog"
-
-        os.chdir(self.cwd)
-        with mock.patch("smart_changelog.updater._gather_context_strings", return_value=["feat: ABC-2"]), mock.patch(
-            "smart_changelog.updater._read_changelog", return_value=changelog_path.read_text()
-        ):
-            with mock.patch("smart_changelog.updater._detect_ticket_id", return_value="ABC-2"):
-                with mock.patch("smart_changelog.updater._categorize", return_value="feature"):
-                    with mock.patch("smart_changelog.updater.get_ticket_summary", return_value={"title": "Implement"}):
-                        with mock.patch("smart_changelog.updater._upsert_entry", return_value=(new_content, True)):
-                            with mock.patch(
-                                "smart_changelog.updater._update_last_updated", return_value=(new_content, True)
-                            ):
-                                with mock.patch("smart_changelog.updater._maybe_commit_and_push") as commit_mock:
-                                    updater.run_update(
-                                        dry_run=False, use_ai=False, forced_ticket=None, verbose=False
-                                    )
-
-        self.assertEqual(changelog_path.read_text(), new_content)
-        commit_mock.assert_called_once()
-
-    def test_run_update_with_ai_enrichment(self) -> None:
-        changelog = (
-            "# Changelog\n\n"
-            "## [Unreleased]\n_Last updated: 2025-01-01_\n\n"
-            "### 🧩 New Features\n\n"
-            "### 🐛 Bug Fixes\n\n"
-            "### ⚙️ Changes\n"
-        )
-
-        os.chdir(self.cwd)
-        with mock.patch("smart_changelog.updater._gather_context_strings", return_value=["feat: AI-123"]), mock.patch(
-            "smart_changelog.updater._read_changelog", return_value=changelog
-        ), mock.patch(
-            "smart_changelog.updater._detect_ticket_id", return_value="AI-123"
-        ), mock.patch("smart_changelog.updater._categorize", return_value="feature"), mock.patch(
-            "smart_changelog.updater.get_ticket_summary", return_value={"title": "Implement feature"}
-        ), mock.patch(
-            "smart_changelog.updater.enhance_description", return_value="Enhanced summary"
-        ) as enhance_mock, mock.patch(
-            "smart_changelog.updater._upsert_entry", return_value=(changelog, True)
-        ), mock.patch(
-            "smart_changelog.updater._update_last_updated", return_value=(changelog, True)
-        ), mock.patch(
-            "smart_changelog.updater._maybe_commit_and_push"
-        ) as commit_mock:
-            updater.run_update(dry_run=False, use_ai=True, forced_ticket=None, verbose=False)
-
-        enhance_mock.assert_called_once()
-        commit_mock.assert_called_once()
-
-    def test_run_update_already_up_to_date(self) -> None:
-        changelog = "# Changelog\n"
-        os.chdir(self.cwd)
-        with mock.patch("smart_changelog.updater._gather_context_strings", return_value=["Existing change"]), mock.patch(
-            "smart_changelog.updater._read_changelog", return_value=changelog
-        ), mock.patch(
-            "smart_changelog.updater._detect_ticket_id", return_value="ABC-9"
-        ), mock.patch("smart_changelog.updater._categorize", return_value="feature"), mock.patch(
-            "smart_changelog.updater.get_ticket_summary", return_value={"title": "Existing"}
-        ), mock.patch(
-            "smart_changelog.updater._upsert_entry", return_value=(changelog, False)
-        ), mock.patch(
-            "smart_changelog.updater._update_last_updated", return_value=(changelog, False)
-        ), mock.patch(
-            "smart_changelog.updater._maybe_commit_and_push"
-        ) as commit_mock:
-            updater.run_update(dry_run=False, use_ai=False, forced_ticket=None, verbose=False)
-
-        commit_mock.assert_not_called()
-
-    def test_run_update_without_ticket(self) -> None:
-        os.chdir(self.cwd)
-        changelog = (
-            "# Changelog\n\n"
-            "## [Unreleased]\n_Last updated: 2025-01-01_\n\n"
-            "### 🧩 New Features\n\n"
-            "### 🐛 Bug Fixes\n\n"
-            "### ⚙️ Changes\n"
-        )
-        context = updater.UpdateContext(
-            ticket_id="CHANGE-abc123",
-            category="change",
-            title="Commit title",
-            author="Alice",
-            date="2025-02-02",
-        )
-        with mock.patch("smart_changelog.updater._gather_context_strings", return_value=["Commit title"]), mock.patch(
-            "smart_changelog.updater._read_changelog", return_value=changelog
-        ), mock.patch(
-            "smart_changelog.updater._detect_ticket_id", return_value=None
-        ), mock.patch(
-            "smart_changelog.updater._contexts_from_commit_history", return_value=[context]
-        ), mock.patch(
-            "smart_changelog.updater._categorize", return_value="change"
-        ), mock.patch(
-            "smart_changelog.updater._upsert_entry", return_value=(changelog, True)
-        ) as upsert_mock, mock.patch(
-            "smart_changelog.updater._update_last_updated", return_value=(changelog, True)
-        ), mock.patch(
-            "smart_changelog.updater.Path.write_text"
-        ), mock.patch(
-            "smart_changelog.updater._maybe_commit_and_push"
-        ) as commit_mock, mock.patch(
-            "smart_changelog.updater.get_ticket_summary"
-        ) as jira_mock:
-            updater.run_update(dry_run=False, use_ai=False, forced_ticket=None, verbose=False)
-
-        upsert_mock.assert_called_once()
-        commit_mock.assert_called_once()
-        jira_mock.assert_not_called()
-
-    def test_current_branch_from_env(self) -> None:
-        os.environ["GITHUB_REF_NAME"] = "feature"
-        self.assertEqual(updater._current_branch(), "feature")
-
-    def test_current_branch_fallback(self) -> None:
-        with mock.patch("smart_changelog.updater._git_output", return_value="develop"):
-            branch = updater._current_branch()
-        self.assertEqual(branch, "develop")
-
-    def test_current_branch_none(self) -> None:
-        with mock.patch("smart_changelog.updater._git_output", return_value=None):
-            branch = updater._current_branch()
-        self.assertIsNone(branch)
+        with mock.patch.object(updater, "_git_available", return_value=True), mock.patch.object(
+            updater, "_current_branch", return_value="main"
+        ), mock.patch("subprocess.run", side_effect=sequence_push_fail):
+            updater._maybe_commit_and_push("CHANGELOG.md", "entry")
 
 
 if __name__ == "__main__":

@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from importlib import resources
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - optional dependency path
+    yaml = None  # type: ignore[assignment]
 
 try:
     from jinja2 import Template
@@ -62,12 +67,17 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
     changelog_path = Path("CHANGELOG.md")
     changelog_text = _read_changelog(changelog_path)
 
+    version = _current_version()
+    version_heading = f"## {version}"
+    date_str = datetime.utcnow().date().isoformat()
+
+    changelog_text, version_created = _ensure_version_block(changelog_text, version_heading, date_str)
+
     context_strings = _gather_context_strings()
     existing_ids = _extract_existing_ids(changelog_text)
     ticket_id = _detect_ticket_id(forced_ticket, context_strings)
 
     commit_title = _git_output(["git", "log", "-1", "--pretty=%s"]) or ""
-    date_str = datetime.utcnow().date().isoformat()
     author = _detect_author()
 
     contexts: List[UpdateContext] = []
@@ -109,7 +119,7 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
             LOGGER.info("Proceeding without Jira ticket; using fallback identifier %s", fallback_contexts[0].ticket_id)
         contexts.extend(fallback_contexts)
 
-    changes_made = False
+    changes_made = version_created
     last_entry = ""
     changelog_updated = changelog_text
 
@@ -117,12 +127,18 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
         heading = SECTION_HEADINGS.get(ctx.category, SECTION_HEADINGS["change"])
         LOGGER.info("Updating changelog for %s (category: %s)", ctx.ticket_id, ctx.category)
         entry = ctx.render_entry()
-        changelog_updated, entry_changed = _upsert_entry(changelog_updated, heading, entry, ctx.ticket_id)
+        changelog_updated, entry_changed = _upsert_entry_for_version(
+            changelog_updated,
+            version_heading,
+            heading,
+            entry,
+            ctx.ticket_id,
+        )
         existing_ids.add(ctx.ticket_id)
         changes_made = changes_made or entry_changed
         last_entry = entry
 
-    changelog_updated, date_changed = _update_last_updated(changelog_updated, date_str)
+    changelog_updated, date_changed = _update_last_updated(changelog_updated, version_heading, date_str)
     changes_made = changes_made or date_changed
 
     if not changes_made:
@@ -218,6 +234,98 @@ def _detect_author() -> str:
     return author or "Unknown"
 
 
+def _current_version(manifest_path: Optional[Path] = None) -> str:
+    path = manifest_path or Path("manifest.yaml")
+    if not path.exists():
+        LOGGER.warning("manifest.yaml not found; defaulting version 0.0")
+        return "0.0"
+
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception as exc:  # pragma: no cover - read issues
+        LOGGER.warning("Failed to read manifest.yaml: %s", exc)
+        return "0.0"
+
+    data: Dict[str, Any]
+    if yaml is not None:
+        try:
+            data = yaml.safe_load(text) or {}
+        except Exception as exc:  # pragma: no cover - malformed manifest
+            LOGGER.warning("Failed to parse manifest.yaml: %s", exc)
+            return "0.0"
+    else:  # pragma: no cover - fallback path
+        data = _parse_manifest_without_yaml(text)
+
+    version = (data or {}).get("version", {}) or {}
+    major = version.get("major")
+    minor = version.get("minor")
+    prerelease = version.get("prerelease") or ""
+
+    if major is None or minor is None:
+        LOGGER.warning("Manifest missing major/minor version; defaulting to 0.0")
+        return "0.0"
+
+    version_str = f"{major}.{minor}"
+    if prerelease:
+        version_str = f"{version_str}-{prerelease}"
+    return str(version_str)
+
+
+def _parse_manifest_without_yaml(text: str) -> Dict[str, Any]:  # pragma: no cover - minimal fallback
+    result: Dict[str, Any] = {}
+    version: Dict[str, Any] = {}
+    in_version = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("version:"):
+            in_version = True
+            continue
+        if in_version and ":" in line:
+            key, value = [part.strip() for part in line.split(":", 1)]
+            if value.startswith("\"") and value.endswith("\""):
+                value = value[1:-1]
+            elif value.isdigit():
+                value = int(value)
+            version[key] = value
+    result["version"] = version
+    return result
+
+
+def _ensure_version_block(content: str, version_heading: str, date_str: str) -> Tuple[str, bool]:
+    if version_heading in content:
+        return content, False
+
+    block = (
+        f"{version_heading}\n"
+        f"_Last updated: {date_str}_\n\n"
+        "### 🧩 New Features\n\n"
+        "### 🐛 Bug Fixes\n\n"
+        "### ⚙️ Changes\n"
+    )
+
+    unreleased_pattern = re.compile(r"## \[Unreleased\].*?(?=\n## |\Z)", re.DOTALL)
+    match = unreleased_pattern.search(content)
+    if match:
+        content = content[: match.start()] + block + content[match.end():]
+        return content, True
+
+    if content.strip() == "# Changelog" or not content.strip():
+        new_content = content.rstrip() + "\n\n" + block + "\n"
+        return new_content, True
+
+    header_match = re.search(r"^# .*?(\n|\Z)", content)
+    insert_at = header_match.end() if header_match else 0
+    new_content = content[:insert_at] + "\n" + block + "\n" + content[insert_at:]
+    return new_content, True
+
+
+def _find_version_block(content: str, version_heading: str) -> Optional[re.Match[str]]:
+    pattern = re.compile(rf"({re.escape(version_heading)}\n(?:.*?))(?=\n## |\Z)", re.DOTALL)
+    return pattern.search(content)
+
+
 def _extract_existing_ids(content: str) -> Set[str]:
     return set(re.findall(r"(CHANGE-[A-Za-z0-9]+)", content))
 
@@ -259,23 +367,39 @@ def _contexts_from_commit_history(existing_ids: Set[str], use_ai: bool, limit: i
     return new_contexts
 
 
-def _upsert_entry(content: str, heading: str, entry: str, ticket_id: str) -> Tuple[str, bool]:
+def _upsert_entry_for_version(
+    content: str,
+    version_heading: str,
+    category_heading: str,
+    entry: str,
+    ticket_id: str,
+) -> Tuple[str, bool]:
+    version_match = _find_version_block(content, version_heading)
+    if not version_match:
+        LOGGER.warning("Version block '%s' not found", version_heading)
+        return content, False
+
+    block = version_match.group(1)
+    updated_block, changed = _upsert_entry_in_block(block, category_heading, entry, ticket_id)
+    if not changed:
+        return content, False
+
+    updated_content = content[: version_match.start(1)] + updated_block + content[version_match.end(1):]
+    return updated_content, True
+
+
+def _upsert_entry_in_block(block: str, heading: str, entry: str, ticket_id: str) -> Tuple[str, bool]:
     section_regex = re.compile(rf"({re.escape(heading)}\n(?:.*?))(\n### |\n## |\Z)", re.DOTALL)
-    match = section_regex.search(content)
+    match = section_regex.search(block)
 
     if not match:
-        LOGGER.warning("Section '%s' not found, appending to [Unreleased] block", heading)
-        unreleased_regex = re.compile(r"(## \[Unreleased\].*?)(\n## |\Z)", re.DOTALL)
-        unreleased_match = unreleased_regex.search(content)
-        new_section = f"{heading}\n\n{entry}\n"
-        if unreleased_match:
-            start, end = unreleased_match.span(1)
-            unreleased_block = unreleased_match.group(1)
-            updated_block = unreleased_block.rstrip() + "\n\n" + new_section
-            content = content[:start] + updated_block + content[end:]
-        if not unreleased_match:
-            content = content.rstrip() + "\n\n## [Unreleased]\n\n" + new_section
-        return content, True
+        LOGGER.warning("Section '%s' not found in version block; creating", heading)
+        insertion_point = block.strip().endswith(heading)
+        if insertion_point:
+            new_block = block.rstrip() + "\n\n" + entry + "\n"
+            return new_block, True
+        new_block = block.rstrip() + f"\n{heading}\n\n{entry}\n"
+        return new_block, True
 
     section = match.group(1)
     section_lines = section.splitlines()
@@ -285,36 +409,43 @@ def _upsert_entry(content: str, heading: str, entry: str, ticket_id: str) -> Tup
         if marker in line:
             normalized_line = line.strip()
             if normalized_line == entry:
-                return content, False
+                return block, False
             section_lines[idx] = entry
             new_section = "\n".join(section_lines)
-            updated = content[: match.start(1)] + new_section + content[match.end(1):]
-            return updated, True
+            new_block = block[: match.start(1)] + new_section + block[match.end(1):]
+            return new_block, True
 
     insert_index = 1
     if len(section_lines) > 1 and section_lines[1].strip() == "":
         insert_index = 2
     section_lines.insert(insert_index, entry)
     new_section = "\n".join(section_lines)
-    updated = content[: match.start(1)] + new_section + content[match.end(1):]
-    return updated, True
+    new_block = block[: match.start(1)] + new_section + block[match.end(1):]
+    return new_block, True
 
 
-def _update_last_updated(content: str, date_str: str) -> Tuple[str, bool]:
+def _update_last_updated(content: str, version_heading: str, date_str: str) -> Tuple[str, bool]:
+    match = _find_version_block(content, version_heading)
+    if not match:
+        return content, False
+
+    block = match.group(1)
     pattern = re.compile(r"(_Last updated:\s*)(\d{4}-\d{2}-\d{2})(_)")
-    if pattern.search(content):
-        new_content = pattern.sub(rf"\g<1>{date_str}\3", content, count=1)
-        return new_content, new_content != content
+    if pattern.search(block):
+        updated_block = pattern.sub(rf"\g<1>{date_str}\3", block, count=1)
+    else:
+        lines = block.splitlines()
+        if len(lines) >= 2 and lines[1].startswith("_Last updated:"):
+            lines[1] = f"_Last updated: {date_str}_"
+            updated_block = "\n".join(lines)
+        else:
+            updated_block = block.replace(version_heading, f"{version_heading}\n_Last updated: {date_str}_", 1)
 
-    # Fallback: inject immediately after the [Unreleased] header when the marker is missing.
-    unreleased_header = "## [Unreleased]"
-    marker = "_Last updated:"
-    if unreleased_header in content and marker not in content:
-        replacement = f"{unreleased_header}\n_Last updated: {date_str}_"
-        new_content = content.replace(unreleased_header, replacement, 1)
-        return new_content, True
+    if updated_block == block:
+        return content, False
 
-    return content, False
+    updated_content = content[: match.start(1)] + updated_block + content[match.end(1):]
+    return updated_content, True
 
 
 def _maybe_commit_and_push(changelog_path: str, entry_preview: str) -> None:

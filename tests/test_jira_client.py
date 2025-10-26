@@ -20,6 +20,17 @@ class JiraClientTests(unittest.TestCase):
         self.assertEqual(result["title"], "ABC-123")
         self.assertEqual(result["labels"], [])
 
+    def test_missing_credentials_with_url_returns_ticket_id(self) -> None:
+        os.environ["JIRA_URL"] = "https://example.atlassian.net"
+        os.environ.pop("JIRA_TOKEN", None)
+        os.environ.pop("JIRA_EMAIL", None)
+        os.environ.pop("JIRA_API_TOKEN", None)
+        dummy = _dummy_requests(None)
+        dummy.get = mock.Mock(side_effect=AssertionError("should not call"))
+        with mock.patch.object(jira_client, "requests", dummy):
+            result = jira_client.get_ticket_summary("ABC-126")
+        self.assertEqual(result["title"], "ABC-126")
+
     def test_requests_not_available(self) -> None:
         os.environ["JIRA_URL"] = "https://example.atlassian.net"
         os.environ["JIRA_TOKEN"] = "token"
@@ -174,6 +185,9 @@ class JiraClientTests(unittest.TestCase):
             result = jira_client.get_ticket_summary("ABC-JSON")
 
         self.assertEqual(result["title"], "ABC-JSON")
+
+    def test_build_auth_headers_none(self) -> None:
+        self.assertIsNone(jira_client._build_auth_headers(None, None, None))
 
 
 def _dummy_requests(response, status_exception: bool = False):

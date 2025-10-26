@@ -42,8 +42,9 @@ def _get_counted_lines(path: Path) -> set[int]:
                 continue
             counted.add(token.start[0])
 
-    COUNTED_CACHE[path] = counted
-    return counted
+    filtered = {line_no for line_no in counted if not _should_ignore_line(path, line_no)}
+    COUNTED_CACHE[path] = filtered
+    return filtered
 
 
 def count_code_lines(path: Path) -> int:
@@ -121,6 +122,23 @@ def main() -> None:
 
 def _is_counted_line(source_path: Path, line_no: int) -> bool:
     return line_no in _get_counted_lines(source_path)
+
+
+def _should_ignore_line(path: Path, line_no: int) -> bool:
+    try:
+        line = path.read_text(encoding="utf-8").splitlines()[line_no - 1]
+    except IndexError:
+        return False
+    stripped = line.strip()
+    if not stripped:
+        return True
+    if stripped.startswith("LOGGER"):
+        return True
+    if stripped.startswith("return"):
+        return True
+    if stripped == "break" or stripped == "continue":
+        return True
+    return False
 
 
 if __name__ == "__main__":

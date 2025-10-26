@@ -36,11 +36,25 @@ smart-changelog update [--dry-run] [--verbose] [--ai] [--ticket TICKETID]
 | `CI_COMMIT_AUTHOR` / `GIT_AUTHOR_NAME` | Used to attribute changelog entries. |
 | `CI_COMMIT_BRANCH`, `GITHUB_REF_NAME`, etc. | Used to determine the target branch. |
 
+## Versioning with `manifest.yaml`
+Smart-Changelog uses `manifest.yaml` to determine the release section to update. The file must contain a
+`version` mapping with `major` and `minor` numbers (and optionally `prerelease`). Whenever you bump the
+version in `manifest.yaml`, the next run automatically creates a new changelog section headed with that
+version and stamps it with the current date.
+
+```yaml
+version:
+  major: 1
+  minor: 105
+  patch: ${CI_PIPELINE_IID}
+  prerelease: ""
+```
+
 ## How It Works
 1. Detect the latest commit or merge title and extract the Jira ticket (pattern `[A-Z]+-\d+`).
 2. Determine the change type (`feat`, `fix`, `chore`, `refactor`) to target the right section.
 3. Fetch ticket details from Jira and optionally enrich them via OpenAI.
-4. Update `CHANGELOG.md` under the `[Unreleased]` section, refreshing the _Last updated_ date.
+4. Update `CHANGELOG.md` under the current manifest version section, refreshing the _Last updated_ date.
 5. Stage, commit, and push the changelog if changes are found (skip when `--dry-run`).
 
 ## CI/CD Integration
