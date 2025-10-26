@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4
+_Last updated: 2025-10-26_
+
+
+<!-- section:feature -->
+
+<!-- /section:feature -->
+
+
+<!-- section:fix -->
+
+<!-- /section:fix -->
+
+
+<!-- section:change -->
+### ⚙️ Changes
+
+
+- testt bug (FOK-5, Viacheslav Liashenko, 2025-10-26)
+
+
+
+<!-- /section:change -->
+
 ## 0.3
 _Last updated: 2025-10-26_
 
