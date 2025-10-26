@@ -11,6 +11,15 @@ from smart_changelog import updater
 
 
 class VersionHelperTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmpdir.cleanup)
+        self.original_cwd = Path.cwd()
+        os.chdir(self.tmpdir.name)
+
+    def tearDown(self) -> None:
+        os.chdir(self.original_cwd)
+
     def test_update_context_render_uses_template(self) -> None:
         original_template = updater.Template
 
@@ -33,14 +42,80 @@ class VersionHelperTests(unittest.TestCase):
             self.assertEqual(ctx.render_entry(), "rendered")
         finally:
             updater.Template = original_template
-    def setUp(self) -> None:
-        self.tmpdir = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmpdir.cleanup)
-        self.original_cwd = Path.cwd()
-        os.chdir(self.tmpdir.name)
 
-    def tearDown(self) -> None:
-        os.chdir(self.original_cwd)
+    def test_render_version_block_includes_markers(self) -> None:
+        block = updater._render_version_block("1.5", "2025-02-02", {"feature": ["- Entry A"]})
+
+        self.assertIn("## 1.5", block)
+        self.assertIn("_Last updated: 2025-02-02_", block)
+        self.assertIn("<!-- section:feature -->", block)
+        self.assertIn("<!-- /section:change -->", block)
+        self.assertIn("### 🧩 New Features", block)
+        self.assertIn("- Entry A", block)
+        self.assertNotIn("### 🐛 Bug Fixes", block)
+        self.assertTrue(block.endswith("\n"))
+
+    def test_render_version_block_respects_custom_template(self) -> None:
+        if updater.Template is None:  # pragma: no cover - depends on optional dependency
+            self.skipTest("jinja2 not installed")
+
+        template_path = Path(self.tmpdir.name) / "custom.j2"
+        template_path.write_text(
+            "{{ version }}|{{ date }}|"
+            "{% for section in sections %}{{ section.key }}={{ section.entries|length }};{% endfor %}",
+            encoding="utf-8",
+        )
+
+        os.environ["SMART_CHANGELOG_TEMPLATE"] = str(template_path)
+        try:
+            block = updater._render_version_block("9.9", "2025-03-03", {"feature": ["- Alpha"]})
+        finally:
+            os.environ.pop("SMART_CHANGELOG_TEMPLATE", None)
+
+        self.assertIn("9.9|2025-03-03", block)
+        self.assertIn("feature=1", block)
+
+    def test_parse_version_block_roundtrip(self) -> None:
+        block = updater._render_version_block(
+            "2.0",
+            "2025-04-04",
+            {"feature": ["- A"], "change": ["- B"]},
+        )
+        parsed = updater._parse_version_block(block)
+
+        self.assertEqual(parsed["version"], "2.0")
+        self.assertEqual(parsed["date"], "2025-04-04")
+        self.assertEqual(parsed["sections"]["feature"], ["- A"])
+        self.assertEqual(parsed["sections"]["change"], ["- B"])
+        self.assertEqual(parsed["sections"]["fix"], [])
+
+    def test_parse_version_block_handles_legacy_headings(self) -> None:
+        legacy_block = (
+            "## 3.0\n"
+            "_Last updated: 2025-05-05_\n\n"
+            "### 🧩 New Features\n\n"
+            "- Legacy entry\n\n"
+            "### 🐛 Bug Fixes\n\n"
+            "- Legacy bug\n"
+        )
+
+        parsed = updater._parse_version_block(legacy_block)
+        self.assertEqual(parsed["sections"]["feature"], ["- Legacy entry"])
+        self.assertEqual(parsed["sections"]["fix"], ["- Legacy bug"])
+        self.assertEqual(parsed["sections"]["change"], [])
+
+    def test_replace_version_block_detects_changes(self) -> None:
+        base_block = updater._render_version_block("1.0", "2025-01-01")
+        content = "# Changelog\n\n" + base_block + "## 0.9\n_Last updated: 2024-12-12_\n"
+
+        unchanged, changed = updater._replace_version_block(content, "## 1.0", base_block)
+        self.assertFalse(changed)
+        self.assertEqual(unchanged, content)
+
+        new_block = updater._render_version_block("1.0", "2025-01-01", {"feature": ["- New entry"]})
+        updated, changed = updater._replace_version_block(content, "## 1.0", new_block)
+        self.assertTrue(changed)
+        self.assertIn("- New entry", updated)
 
     def test_current_version_from_manifest(self) -> None:
         Path("manifest.yaml").write_text(
@@ -58,6 +133,7 @@ class VersionHelperTests(unittest.TestCase):
         self.assertTrue(created)
         self.assertIn("## 1.5", updated)
         self.assertIn("_Last updated: 2025-02-02_", updated)
+        self.assertIn("<!-- section:feature -->", updated)
 
     def test_ensure_version_block_replaces_unreleased(self) -> None:
         content = (
@@ -71,24 +147,22 @@ class VersionHelperTests(unittest.TestCase):
         self.assertTrue(created)
         self.assertIn("## 3.0", updated)
         self.assertNotIn("Unreleased", updated)
+        self.assertIn("<!-- section:change -->", updated)
 
     def test_upsert_entry_for_version_inserts_and_updates(self) -> None:
-        block = (
-            "# Changelog\n\n"
-            "## 1.0\n_Last updated: 2025-01-01_\n\n"
-            "### 🧩 New Features\n\n"
-            "### 🐛 Bug Fixes\n\n"
-            "### ⚙️ Changes\n"
-        )
+        block = updater._render_version_block("1.0", "2025-01-01")
+        content = "# Changelog\n\n" + block
+
         updated, changed = updater._upsert_entry_for_version(
-            block,
+            content,
             "## 1.0",
             "### ⚙️ Changes",
             "- First entry (CHANGE-1, Alice, 2025-01-02)",
             "CHANGE-1",
         )
         self.assertTrue(changed)
-        self.assertIn("First entry", updated)
+        self.assertIn("### ⚙️ Changes", updated)
+        self.assertIn("- First entry (CHANGE-1, Alice, 2025-01-02)", updated)
 
         updated_again, changed_again = updater._upsert_entry_for_version(
             updated,
@@ -98,15 +172,14 @@ class VersionHelperTests(unittest.TestCase):
             "CHANGE-1",
         )
         self.assertTrue(changed_again)
-        self.assertIn("First entry updated", updated_again)
+        self.assertIn("- First entry updated (CHANGE-1, Alice, 2025-01-03)", updated_again)
+        self.assertNotIn("- First entry (CHANGE-1, Alice, 2025-01-02)", updated_again)
 
     def test_upsert_entry_adds_missing_section(self) -> None:
-        block = (
-            "# Changelog\n\n"
-            "## 2.0\n_Last updated: 2025-05-01_\n"
-        )
+        block = updater._render_version_block("2.0", "2025-05-01")
+        content = "# Changelog\n\n" + block
         updated, changed = updater._upsert_entry_for_version(
-            block,
+            content,
             "## 2.0",
             "### 🐛 Bug Fixes",
             "- Fix bug (BUG-1, Bob, 2025-05-02)",
@@ -114,24 +187,20 @@ class VersionHelperTests(unittest.TestCase):
         )
         self.assertTrue(changed)
         self.assertIn("### 🐛 Bug Fixes", updated)
-        self.assertIn("Fix bug", updated)
+        self.assertIn("- Fix bug (BUG-1, Bob, 2025-05-02)", updated)
 
     def test_update_last_updated(self) -> None:
-        content = (
-            "# Changelog\n\n"
-            "## 1.2\n_Last updated: 2025-01-01_\n\n"
-            "### ⚙️ Changes\n"
-        )
+        block = updater._render_version_block("1.2", "2025-01-01", {"change": ["- Item"]})
+        content = "# Changelog\n\n" + block
         updated, changed = updater._update_last_updated(content, "## 1.2", "2025-04-04")
         self.assertTrue(changed)
         self.assertIn("_Last updated: 2025-04-04_", updated)
 
     def test_update_last_updated_inserts_when_missing(self) -> None:
-        content = (
-            "# Changelog\n\n"
-            "## 3.0\n\n"
-            "### ⚙️ Changes\n"
-        )
+        block = updater._render_version_block("3.0", "2025-06-01")
+        block_without_date = block.replace("_Last updated: 2025-06-01_\n", "", 1)
+        content = "# Changelog\n\n" + block_without_date
+
         updated, changed = updater._update_last_updated(content, "## 3.0", "2025-06-06")
         self.assertTrue(changed)
         self.assertIn("_Last updated: 2025-06-06_", updated)
@@ -368,12 +437,6 @@ class AdditionalHelperTests(unittest.TestCase):
         updated, created = updater._ensure_version_block(content, "## 0.10", "2025-07-07")
         self.assertTrue(created)
         self.assertIn("## 0.10", updated)
-
-    def test_upsert_entry_in_block_appends_when_heading_ends_block(self) -> None:
-        block = "## 4.0\n_Last updated: 2025-05-01_\n\n### 🧩 New Features"
-        updated, changed = updater._upsert_entry_in_block(block, "### 🧩 New Features", "- Item", "ITEM-1")
-        self.assertTrue(changed)
-        self.assertIn("- Item", updated)
 
     def test_maybe_commit_skip_env_variable(self) -> None:
         os.environ["SMART_CHANGELOG_SKIP_COMMIT"] = "1"

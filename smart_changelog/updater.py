@@ -33,6 +33,175 @@ SECTION_HEADINGS = {
     "change": "### ⚙️ Changes",
 }
 
+SECTION_MARKERS = {
+    key: {
+        "start": f"<!-- section:{key} -->",
+        "end": f"<!-- /section:{key} -->",
+    }
+    for key in SECTION_HEADINGS
+}
+
+
+def _read_template_text(filename: str) -> str:
+    """Read a template asset, tolerating namespace package execution."""
+    try:
+        return resources.files("smart_changelog.templates").joinpath(filename).read_text(encoding="utf-8")
+    except Exception:
+        fallback_path = Path(__file__).parent / "templates" / filename
+        return fallback_path.read_text(encoding="utf-8")
+
+
+def _section_definitions() -> List[Dict[str, Any]]:
+    """Builds metadata for each changelog section in render order."""
+    definitions: List[Dict[str, Any]] = []
+    for key, heading in SECTION_HEADINGS.items():
+        definitions.append(
+            {
+                "key": key,
+                "heading": heading.replace("### ", "").strip(),
+                "start_marker": SECTION_MARKERS[key]["start"],
+                "end_marker": SECTION_MARKERS[key]["end"],
+            }
+        )
+    return definitions
+
+
+def _load_version_template_text() -> str:
+    """Loads the version block template, respecting SMART_CHANGELOG_TEMPLATE."""
+    custom_template = os.getenv("SMART_CHANGELOG_TEMPLATE")
+    if custom_template:
+        try:
+            return Path(custom_template).read_text(encoding="utf-8")
+        except Exception as exc:  # pragma: no cover - filesystem variance
+            LOGGER.warning("Failed to load SMART_CHANGELOG_TEMPLATE '%s': %s", custom_template, exc)
+
+    return _read_template_text("version_block.md.j2")
+
+
+def _normalise_block(block: str) -> str:
+    """Normalise leading/trailing whitespace to ease comparisons and replacements."""
+    trimmed = block.strip("\n")
+    return trimmed + "\n"
+
+
+def _render_version_block(
+    version: str,
+    date_str: str,
+    entries_by_section: Optional[Dict[str, List[str]]] = None,
+) -> str:
+    """Render a version block using the configured template."""
+    entries = entries_by_section or {}
+    sections: List[Dict[str, Any]] = []
+    for definition in _section_definitions():
+        sections.append(
+            {
+                **definition,
+                "entries": entries.get(definition["key"], []),
+            }
+        )
+
+    template_text = _load_version_template_text()
+    if Template is not None:
+        rendered = Template(template_text).render(version=version, date=date_str, sections=sections)
+    else:  # pragma: no cover - fallback when jinja2 missing
+        rendered = _render_version_block_fallback(version, date_str, sections)
+
+    return _normalise_block(rendered)
+
+
+def _render_version_block_fallback(version: str, date_str: str, sections: List[Dict[str, Any]]) -> str:
+    lines: List[str] = [f"## {version}", f"_Last updated: {date_str}_", ""]
+    for section in sections:
+        lines.append(section["start_marker"])
+        entries = section.get("entries") or []
+        if entries:
+            lines.append(f"### {section['heading']}")
+            lines.append("")
+            lines.extend(entries)
+            lines.append("")
+        lines.append(section["end_marker"])
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def _parse_version_block(block: str) -> Dict[str, Any]:
+    """Parse an existing version block into its metadata and entries."""
+    lines = block.strip().splitlines()
+    version = ""
+    if lines and lines[0].startswith("## "):
+        version = lines[0][3:].strip()
+
+    date_match = re.search(r"_Last updated:\s*(\d{4}-\d{2}-\d{2})_", block)
+    date = date_match.group(1) if date_match else ""
+
+    sections: Dict[str, List[str]] = {}
+    for definition in _section_definitions():
+        key = definition["key"]
+        start_marker = definition["start_marker"]
+        end_marker = definition["end_marker"]
+        start_idx = block.find(start_marker)
+        end_idx = block.find(end_marker)
+
+        entries: List[str] = []
+        if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+            segment = block[start_idx + len(start_marker) : end_idx]
+            entries = _extract_entries_from_segment(segment)
+        else:
+            entries = _extract_entries_from_heading(block, SECTION_HEADINGS[key])
+
+        sections[key] = entries
+
+    return {"version": version, "date": date, "sections": sections}
+
+
+def _extract_entries_from_segment(segment: str) -> List[str]:
+    """Extract entry lines from a templated section segment."""
+    lines = segment.splitlines()
+    cleaned = _strip_non_entry_lines(lines)
+    return cleaned
+
+
+def _extract_entries_from_heading(block: str, heading: str) -> List[str]:
+    """Fallback parser for legacy headings without template markers."""
+    pattern = re.compile(rf"{re.escape(heading)}\n(.*?)(?=\n### |\n## |\Z)", re.DOTALL)
+    match = pattern.search(block)
+    if not match:
+        return []
+    lines = match.group(1).splitlines()
+    cleaned = _strip_non_entry_lines(lines)
+    return cleaned
+
+
+def _strip_non_entry_lines(lines: List[str]) -> List[str]:
+    """Trim blank lines and remove heading remnants from a section."""
+    trimmed = list(lines)
+    while trimmed and not trimmed[0].strip():
+        trimmed.pop(0)
+    if trimmed and trimmed[0].lstrip().startswith("###"):
+        trimmed.pop(0)
+    while trimmed and not trimmed[0].strip():
+        trimmed.pop(0)
+    while trimmed and not trimmed[-1].strip():
+        trimmed.pop()
+    return [line.rstrip() for line in trimmed if line.strip()]
+
+
+def _replace_version_block(content: str, version_heading: str, new_block: str) -> Tuple[str, bool]:
+    """Replace an existing version block with freshly rendered content."""
+    match = _find_version_block(content, version_heading)
+    if not match:
+        LOGGER.warning("Version block '%s' not found", version_heading)
+        return content, False
+
+    existing = _normalise_block(match.group(1))
+    replacement = _normalise_block(new_block)
+    if existing == replacement:
+        return content, False
+
+    updated = content[: match.start(1)] + replacement + content[match.end(1):]
+    return updated, True
+
 
 @dataclass
 class UpdateContext:
@@ -162,7 +331,7 @@ def _read_changelog(path: Path) -> str:
         return path.read_text(encoding="utf-8")
 
     LOGGER.info("CHANGELOG.md not found; bootstrapping from template")
-    template_text = resources.files("smart_changelog.templates").joinpath("changelog_template.md").read_text(encoding="utf-8")
+    template_text = _read_template_text("changelog_template.md")
     path.write_text(template_text, encoding="utf-8")
     return template_text
 
@@ -294,24 +463,31 @@ def _parse_manifest_without_yaml(text: str) -> Dict[str, Any]:  # pragma: no cov
 
 
 def _ensure_version_block(content: str, version_heading: str, date_str: str) -> Tuple[str, bool]:
-    if version_heading in content:
+    if _find_version_block(content, version_heading):
         return content, False
 
-    block = f"{version_heading}\n_Last updated: {date_str}_\n\n"
+    version = version_heading.replace("##", "", 1).strip()
+    block = _render_version_block(version, date_str)
+    if not block.endswith("\n\n"):
+        block = block + "\n"
 
     unreleased_pattern = re.compile(r"## \[Unreleased\].*?(?=\n## |\Z)", re.DOTALL)
     match = unreleased_pattern.search(content)
     if match:
-        content = content[: match.start()] + block + content[match.end():]
+        content = content[: match.start()] + block + content[match.end():].lstrip("\n")
         return content, True
 
     if content.strip() == "# Changelog" or not content.strip():
-        new_content = content.rstrip() + "\n\n" + block + "\n"
+        base = content.rstrip()
+        if not base:
+            new_content = block
+        else:
+            new_content = base + "\n\n" + block
         return new_content, True
 
     header_match = re.search(r"^# .*?(\n|\Z)", content)
     insert_at = header_match.end() if header_match else 0
-    new_content = content[:insert_at] + "\n" + block + "\n" + content[insert_at:]
+    new_content = content[:insert_at] + "\n" + block + content[insert_at:]
     return new_content, True
 
 
@@ -374,48 +550,29 @@ def _upsert_entry_for_version(
         return content, False
 
     block = version_match.group(1)
-    updated_block, changed = _upsert_entry_in_block(block, category_heading, entry, ticket_id)
-    if not changed:
-        return content, False
+    parsed = _parse_version_block(block)
+    sections = {key: list(values) for key, values in parsed["sections"].items()}
 
-    updated_content = content[: version_match.start(1)] + updated_block + content[version_match.end(1):]
-    return updated_content, True
-
-
-def _upsert_entry_in_block(block: str, heading: str, entry: str, ticket_id: str) -> Tuple[str, bool]:
-    section_regex = re.compile(rf"({re.escape(heading)}\n(?:.*?))(\n### |\n## |\Z)", re.DOTALL)
-    match = section_regex.search(block)
-
-    if not match:
-        LOGGER.warning("Section '%s' not found in version block; creating", heading)
-        insertion_point = block.strip().endswith(heading)
-        if insertion_point:
-            new_block = block.rstrip() + "\n\n" + entry + "\n"
-            return new_block, True
-        new_block = block.rstrip() + f"\n{heading}\n\n{entry}\n"
-        return new_block, True
-
-    section = match.group(1)
-    section_lines = section.splitlines()
+    section_key = next((key for key, heading in SECTION_HEADINGS.items() if heading == category_heading), "change")
+    section_entries = sections.get(section_key, [])
 
     marker = f"({ticket_id}"
-    for idx, line in enumerate(section_lines):
+    for idx, line in enumerate(section_entries):
         if marker in line:
-            normalized_line = line.strip()
-            if normalized_line == entry:
-                return block, False
-            section_lines[idx] = entry
-            new_section = "\n".join(section_lines)
-            new_block = block[: match.start(1)] + new_section + block[match.end(1):]
-            return new_block, True
+            if line.strip() == entry:
+                return content, False
+            section_entries[idx] = entry
+            break
+    else:
+        section_entries.insert(0, entry)
 
-    insert_index = 1
-    if len(section_lines) > 1 and section_lines[1].strip() == "":
-        insert_index = 2
-    section_lines.insert(insert_index, entry)
-    new_section = "\n".join(section_lines)
-    new_block = block[: match.start(1)] + new_section + block[match.end(1):]
-    return new_block, True
+    sections[section_key] = section_entries
+
+    version_value = parsed.get("version") or version_heading.replace("##", "", 1).strip()
+    date_value = parsed.get("date", "")
+    new_block = _render_version_block(version_value, date_value, sections)
+    updated_content, changed = _replace_version_block(content, version_heading, new_block)
+    return updated_content, changed
 
 
 def _update_last_updated(content: str, version_heading: str, date_str: str) -> Tuple[str, bool]:

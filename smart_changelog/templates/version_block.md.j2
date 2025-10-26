@@ -1,0 +1,15 @@
+## {{ version }}
+_Last updated: {{ date }}_
+
+{% for section in sections %}
+{{ section.start_marker }}
+{% if section.entries %}### {{ section.heading }}
+
+{% for entry in section.entries %}
+{{ entry }}
+{% endfor %}
+
+{% endif %}
+{{ section.end_marker }}
+
+{% endfor %}

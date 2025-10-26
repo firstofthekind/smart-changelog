@@ -33,14 +33,14 @@ smart-changelog update [--dry-run] [--verbose] [--ai] [--ticket TICKETID]
 | `JIRA_TOKEN` | (Optional) Jira bearer token with read access. |
 | `JIRA_EMAIL` / `JIRA_API_TOKEN` | Alternative to `JIRA_TOKEN`; supply your Atlassian email plus API token for Basic auth. |
 | `OPENAI_API_KEY` | Optional API key for description enrichment. |
+| `SMART_CHANGELOG_TEMPLATE` | Optional path to a custom Jinja2 template for version sections. |
 | `CI_COMMIT_AUTHOR` / `GIT_AUTHOR_NAME` | Used to attribute changelog entries. |
 | `CI_COMMIT_BRANCH`, `GITHUB_REF_NAME`, etc. | Used to determine the target branch. |
 
 ## Versioning with `manifest.yaml`
 Smart-Changelog uses `manifest.yaml` to determine the release section to update. The file must contain a
 `version` mapping with `major` and `minor` numbers (and optionally `prerelease`). Whenever you bump the
-version in `manifest.yaml`, the next run automatically creates a new changelog section headed with that
-version and stamps it with the current date.
+version in `manifest.yaml`, the next run automatically creates or updates the matching changelog section.
 
 ```yaml
 version:
@@ -54,8 +54,23 @@ version:
 1. Detect the latest commit or merge title and extract the Jira ticket (pattern `[A-Z]+-\d+`).
 2. Determine the change type (`feat`, `fix`, `chore`, `refactor`) to target the right section.
 3. Fetch ticket details from Jira and optionally enrich them via OpenAI.
-4. Update `CHANGELOG.md` under the current manifest version section, refreshing the _Last updated_ date.
+4. Update `CHANGELOG.md` under the current manifest version section using a template (default or custom).
 5. Stage, commit, and push the changelog if changes are found (skip when `--dry-run`).
+
+### Customising the version template
+
+The default version block lives at `smart_changelog/templates/version_block.md.j2` and renders a section
+per category whenever entries exist. You can override it by setting `SMART_CHANGELOG_TEMPLATE` to the path
+of your own Jinja2 template. The template receives:
+
+```jinja
+{{ version }}     # e.g. 1.6
+{{ date }}        # ISO date string
+{{ sections }}    # list of {key, heading, entries, start_marker, end_marker}
+```
+
+`start_marker` / `end_marker` comments (e.g. `<!-- section:feature -->`) must be included so the updater can
+parse and merge existing entries across runs.
 
 ## CI/CD Integration
 ### GitHub Actions
