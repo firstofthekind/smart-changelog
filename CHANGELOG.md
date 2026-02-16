@@ -25,7 +25,7 @@ _Last updated: 2025-10-26_
 <!-- /section:change -->
 
 ## 0.4
-_Last updated: 2025-10-26_
+_Last updated: 2026-02-16_
 
 
 <!-- section:feature -->
@@ -42,7 +42,7 @@ _Last updated: 2025-10-26_
 ### ⚙️ Changes
 
 
-- FOK-5 - Test adding bug to the changelog (FOK-5, Viacheslav Liashenko, 2025-10-26)
+- FOK-5 (FOK-5, Viacheslav Liashenko, 2026-02-16)
 
 
 
