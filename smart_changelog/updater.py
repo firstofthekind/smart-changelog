@@ -27,6 +27,9 @@ from .jira_client import get_ticket_summary
 LOGGER = logging.getLogger(__name__)
 
 TICKET_PATTERN = re.compile(r"([A-Z][A-Z0-9]+-\d+)")
+VERSION_LITERAL_PATTERN = re.compile(
+    r"^\d+(?:\.\d+)+(?:-[A-Za-z0-9][A-Za-z0-9._-]*)?$"
+)
 SECTION_HEADINGS = {
     "feature": "### 🧩 New Features",
     "fix": "### 🐛 Bug Fixes",
@@ -264,6 +267,7 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
             ticket_title=title,
             ticket_labels=jira_summary.get("labels"),
             ticket_status=jira_summary.get("status"),
+            ticket_issue_type=jira_summary.get("issue_type"),
         )
         contexts.append(
             UpdateContext(
@@ -421,6 +425,40 @@ def _categorize_from_labels(labels: Optional[List[str]]) -> Optional[str]:
     return None
 
 
+def _categorize_from_issue_type(issue_type: Optional[str]) -> Optional[str]:
+    if not issue_type:
+        return None
+
+    normalized = issue_type.strip().lower()
+    if not normalized:
+        return None
+
+    if any(token in normalized for token in ("bug", "defect", "hotfix")):
+        return "fix"
+    if any(token in normalized for token in ("feature", "story", "epic")):
+        return "feature"
+    if any(token in normalized for token in ("task", "chore", "maintenance", "improvement", "enhancement")):
+        return "change"
+    return None
+
+
+def _categorize_from_title(ticket_title: Optional[str]) -> Optional[str]:
+    if not ticket_title:
+        return None
+
+    normalized = ticket_title.lower()
+    if not normalized.strip():
+        return None
+
+    if any(token in normalized for token in ("bug", "fix", "hotfix", "defect", "regression")):
+        return "fix"
+    if any(token in normalized for token in ("feature", "feat", "introduce", "add", "implement")):
+        return "feature"
+    if any(token in normalized for token in ("refactor", "chore", "maintenance", "cleanup", "update")):
+        return "change"
+    return None
+
+
 def _resolve_category(
     commit_title: str,
     *,
@@ -428,8 +466,17 @@ def _resolve_category(
     ticket_title: Optional[str] = None,
     ticket_labels: Optional[List[str]] = None,
     ticket_status: Optional[str] = None,
+    ticket_issue_type: Optional[str] = None,
 ) -> str:
     base_category = _categorize(commit_title)
+
+    title_category = _categorize_from_title(ticket_title)
+    if title_category:
+        base_category = title_category
+
+    issue_type_category = _categorize_from_issue_type(ticket_issue_type)
+    if issue_type_category:
+        base_category = issue_type_category
 
     label_category = _categorize_from_labels(ticket_labels)
     if label_category:
@@ -447,6 +494,8 @@ def _resolve_category(
         context_parts.append(f"Ticket status: {ticket_status}")
     if ticket_labels:
         context_parts.append(f"Labels: {', '.join(ticket_labels)}")
+    if ticket_issue_type:
+        context_parts.append(f"Issue type: {ticket_issue_type}")
 
     if not context_parts and commit_title:
         context_parts.append(commit_title)
@@ -482,6 +531,10 @@ def _current_version(manifest_path: Optional[Path] = None) -> str:
         LOGGER.warning("Failed to read manifest.yaml: %s", exc)
         return "0.0"
 
+    inline_version = _extract_inline_version(text)
+    if inline_version:
+        return inline_version
+
     data: Dict[str, Any]
     if yaml is not None:
         try:
@@ -492,19 +545,67 @@ def _current_version(manifest_path: Optional[Path] = None) -> str:
     else:  # pragma: no cover - fallback path
         data = _parse_manifest_without_yaml(text)
 
-    version = (data or {}).get("version", {}) or {}
-    major = version.get("major")
-    minor = version.get("minor")
-    prerelease = version.get("prerelease") or ""
-
-    if major is None or minor is None:
-        LOGGER.warning("Manifest missing major/minor version; defaulting to 0.0")
+    if not isinstance(data, dict):
+        LOGGER.warning("Manifest root must be a mapping; defaulting to 0.0")
         return "0.0"
 
-    version_str = f"{major}.{minor}"
-    if prerelease:
-        version_str = f"{version_str}-{prerelease}"
-    return str(version_str)
+    version = (data or {}).get("version", {})
+    if isinstance(version, dict):
+        major = version.get("major")
+        minor = version.get("minor")
+        prerelease = version.get("prerelease") or ""
+
+        if major is None or minor is None:
+            LOGGER.warning("Manifest missing major/minor version; defaulting to 0.0")
+            return "0.0"
+
+        version_str = f"{major}.{minor}"
+        if prerelease:
+            version_str = f"{version_str}-{prerelease}"
+        return str(version_str)
+
+    scalar_version = _normalize_scalar_version(version)
+    if scalar_version:
+        return scalar_version
+
+    LOGGER.warning("Manifest contains unsupported version format; defaulting to 0.0")
+    return "0.0"
+
+
+def _extract_inline_version(text: str) -> Optional[str]:
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+
+        match = re.match(r"^version\s*:\s*(.+)$", stripped)
+        if not match:
+            continue
+
+        raw_value = match.group(1).strip()
+        if not raw_value:
+            return None
+
+        if raw_value[0] == raw_value[-1] and raw_value[0] in {"'", '"'} and len(raw_value) >= 2:
+            raw_value = raw_value[1:-1].strip()
+
+        if VERSION_LITERAL_PATTERN.fullmatch(raw_value):
+            return raw_value
+
+        return None
+    return None
+
+
+def _normalize_scalar_version(version_value: Any) -> Optional[str]:
+    if isinstance(version_value, str):
+        candidate = version_value.strip()
+        return candidate if VERSION_LITERAL_PATTERN.fullmatch(candidate) else None
+
+    if isinstance(version_value, (int, float)):
+        candidate = str(version_value).strip()
+        return candidate if VERSION_LITERAL_PATTERN.fullmatch(candidate) else None
+
+    return None
 
 
 def _parse_manifest_without_yaml(text: str) -> Dict[str, Any]:  # pragma: no cover - minimal fallback

@@ -22,9 +22,15 @@ class JiraTicket:
     title: str
     status: str | None = None
     labels: List[str] | None = None
+    issue_type: str | None = None
 
     def as_dict(self) -> Dict[str, Any]:
-        return {"title": self.title, "status": self.status, "labels": self.labels or []}
+        return {
+            "title": self.title,
+            "status": self.status,
+            "labels": self.labels or [],
+            "issue_type": self.issue_type,
+        }
 
 
 def get_ticket_summary(
@@ -87,8 +93,18 @@ def get_ticket_summary(
     labels: List[str] = []
     if isinstance(fields.get("labels"), list):
         labels = [label for label in fields["labels"] if isinstance(label, str)]
+    issue_type = None
+    if isinstance(fields.get("issuetype"), dict):
+        raw_issue_type = fields["issuetype"].get("name")
+        if isinstance(raw_issue_type, str):
+            issue_type = raw_issue_type
 
-    return JiraTicket(title=summary, status=status, labels=labels).as_dict()
+    return JiraTicket(
+        title=summary,
+        status=status,
+        labels=labels,
+        issue_type=issue_type,
+    ).as_dict()
 
 
 def _build_auth_headers(

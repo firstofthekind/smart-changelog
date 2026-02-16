@@ -19,6 +19,7 @@ class JiraClientTests(unittest.TestCase):
         result = jira_client.get_ticket_summary("ABC-123")
         self.assertEqual(result["title"], "ABC-123")
         self.assertEqual(result["labels"], [])
+        self.assertIsNone(result["issue_type"])
 
     def test_missing_credentials_with_url_returns_ticket_id(self) -> None:
         os.environ["JIRA_URL"] = "https://example.atlassian.net"
@@ -43,6 +44,7 @@ class JiraClientTests(unittest.TestCase):
 
         self.assertEqual(result["title"], "ABC-124")
         self.assertEqual(result["labels"], [])
+        self.assertIsNone(result["issue_type"])
 
     def test_basic_auth_headers_used(self) -> None:
         os.environ["JIRA_URL"] = "https://example.atlassian.net"
@@ -106,6 +108,7 @@ class JiraClientTests(unittest.TestCase):
                         "summary": "Implement feature",
                         "status": {"name": "In Progress"},
                         "labels": ["backend", "high-priority"],
+                        "issuetype": {"name": "Bug"},
                     }
                 }
 
@@ -117,6 +120,7 @@ class JiraClientTests(unittest.TestCase):
         self.assertEqual(data["title"], "Implement feature")
         self.assertEqual(data["status"], "In Progress")
         self.assertEqual(data["labels"], ["backend", "high-priority"])
+        self.assertEqual(data["issue_type"], "Bug")
         dummy.get.assert_called_once()
 
     def test_ticket_not_found(self) -> None:
@@ -136,6 +140,7 @@ class JiraClientTests(unittest.TestCase):
 
         self.assertEqual(data["title"], "ABC-404")
         self.assertEqual(data["labels"], [])
+        self.assertIsNone(data["issue_type"])
 
     def test_http_error_non_404(self) -> None:
         os.environ["JIRA_URL"] = "https://example.atlassian.net"

@@ -124,6 +124,13 @@ class VersionHelperTests(unittest.TestCase):
         )
         self.assertEqual(updater._current_version(), "2.7-rc1")
 
+    def test_current_version_from_scalar_manifest(self) -> None:
+        Path("manifest.yaml").write_text(
+            "version: 0.4\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(updater._current_version(), "0.4")
+
     def test_current_version_missing_manifest(self) -> None:
         self.assertEqual(updater._current_version(), "0.0")
 
@@ -248,6 +255,33 @@ class RunUpdateIntegrationTests(unittest.TestCase):
         self.assertIn("## 1.5", content)
         self.assertIn("- Implement endpoint (FOK-123, Alice", content)
 
+    def test_run_update_with_bug_issue_type_uses_fix_section(self) -> None:
+        def fake_git_output(cmd):
+            joined = " ".join(cmd)
+            if "--pretty=%s" in joined:
+                return "chore: update changelog"
+            if "rev-parse" in joined:
+                return "bug1234"
+            return "placeholder"
+
+        with mock.patch.object(updater, "_gather_context_strings", return_value=[]), mock.patch.object(
+            updater, "_detect_ticket_id", return_value="FOK-5"
+        ), mock.patch.object(
+            updater,
+            "get_ticket_summary",
+            return_value={"title": "Bug in changelog rendering", "issue_type": "Bug"},
+        ), mock.patch.object(
+            updater, "_maybe_commit_and_push"
+        ), mock.patch.object(
+            updater, "_git_output", side_effect=fake_git_output
+        ):
+            updater.run_update(dry_run=False, use_ai=False, forced_ticket=None, verbose=False)
+
+        content = Path("CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("### 🐛 Bug Fixes", content)
+        self.assertIn("- Bug in changelog rendering (FOK-5, Alice", content)
+        self.assertNotIn("### ⚙️ Changes\n\n- Bug in changelog rendering", content)
+
     def test_run_update_with_ai_enrichment_enabled(self) -> None:
         def fake_git_output(cmd):
             joined = " ".join(cmd)
@@ -369,6 +403,11 @@ class AdditionalHelperTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmpdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmpdir.cleanup)
+        self.original_cwd = Path.cwd()
+        os.chdir(self.tmpdir.name)
+
+    def tearDown(self) -> None:
+        os.chdir(self.original_cwd)
 
     def test_current_version_fallback_parser(self) -> None:
         temp = tempfile.TemporaryDirectory()
@@ -453,6 +492,26 @@ class AdditionalHelperTests(unittest.TestCase):
 
         self.assertEqual(category, "feature")
         category_mock.assert_called_once()
+
+    def test_resolve_category_uses_issue_type_when_present(self) -> None:
+        category = updater._resolve_category(
+            "chore: sync changelog",
+            use_ai=False,
+            ticket_title="Update changelog",
+            ticket_issue_type="Bug",
+        )
+
+        self.assertEqual(category, "fix")
+
+    def test_resolve_category_uses_ticket_title_keyword_without_labels(self) -> None:
+        category = updater._resolve_category(
+            "chore: sync changelog",
+            use_ai=False,
+            ticket_title="Bug: changelog category is wrong",
+            ticket_labels=[],
+        )
+
+        self.assertEqual(category, "fix")
 
     def test_read_changelog_bootstraps(self) -> None:
         temp_path = Path(self.tmpdir.name) / "NEW_CHANGELOG.md"
