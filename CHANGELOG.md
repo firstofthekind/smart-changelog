@@ -10,6 +10,12 @@ _Last updated: 2026-02-16_
 
 
 <!-- section:fix -->
+### 🐛 Bug Fixes
+
+
+- Changelog versioning broken (FOK-7, Viacheslav Liashenko, 2026-02-16)
+
+
 
 <!-- /section:fix -->
 
