@@ -104,6 +104,27 @@ class VersionHelperTests(unittest.TestCase):
         self.assertEqual(parsed["sections"]["fix"], ["- Legacy bug"])
         self.assertEqual(parsed["sections"]["change"], [])
 
+    def test_extract_existing_ids_includes_jira_and_change(self) -> None:
+        content = "- Entry (FOK-5, Alice, 2025-01-01)\n- Entry (CHANGE-abc123, Bob, 2025-01-02)\n"
+        existing = updater._extract_existing_ids(content)
+        self.assertIn("FOK-5", existing)
+        self.assertIn("CHANGE-abc123", existing)
+
+    def test_remove_ticket_from_other_versions_removes_stale_zero_block(self) -> None:
+        current_block = updater._render_version_block("0.4", "2025-10-26")
+        stale_zero_block = updater._render_version_block(
+            "0.0",
+            "2025-10-26",
+            {"change": ['- FOK-5 - Bad version write (FOK-5, Alice, 2025-10-26)']},
+        )
+        content = "# Changelog\n\n" + stale_zero_block + current_block
+
+        updated, changed = updater._remove_ticket_from_other_versions(content, "## 0.4", "FOK-5")
+
+        self.assertTrue(changed)
+        self.assertNotIn("## 0.0", updated)
+        self.assertNotIn("Bad version write", updated)
+
     def test_replace_version_block_detects_changes(self) -> None:
         base_block = updater._render_version_block("1.0", "2025-01-01")
         content = "# Changelog\n\n" + base_block + "## 0.9\n_Last updated: 2024-12-12_\n"
@@ -281,6 +302,44 @@ class RunUpdateIntegrationTests(unittest.TestCase):
         self.assertIn("### 🐛 Bug Fixes", content)
         self.assertIn("- Bug in changelog rendering (FOK-5, Alice", content)
         self.assertNotIn("### ⚙️ Changes\n\n- Bug in changelog rendering", content)
+
+    def test_run_update_moves_ticket_from_stale_zero_version(self) -> None:
+        Path("manifest.yaml").write_text(
+            "version:\n  major: 0\n  minor: 4\n",
+            encoding="utf-8",
+        )
+        stale_zero_block = updater._render_version_block(
+            "0.0",
+            "2025-10-26",
+            {"change": ['- FOK-5 - Bad version write (FOK-5, Alice, 2025-10-26)']},
+        )
+        Path("CHANGELOG.md").write_text("# Changelog\n\n" + stale_zero_block, encoding="utf-8")
+
+        def fake_git_output(cmd):
+            joined = " ".join(cmd)
+            if "--pretty=%s" in joined:
+                return "chore: update changelog"
+            if "rev-parse" in joined:
+                return "bug1234"
+            return "placeholder"
+
+        with mock.patch.object(updater, "_gather_context_strings", return_value=[]), mock.patch.object(
+            updater, "_detect_ticket_id", return_value="FOK-5"
+        ), mock.patch.object(
+            updater,
+            "get_ticket_summary",
+            return_value={"title": "FOK-5"},
+        ), mock.patch.object(
+            updater, "_maybe_commit_and_push"
+        ), mock.patch.object(
+            updater, "_git_output", side_effect=fake_git_output
+        ):
+            updater.run_update(dry_run=False, use_ai=False, forced_ticket=None, verbose=False)
+
+        content = Path("CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertNotIn("## 0.0", content)
+        self.assertIn("## 0.4", content)
+        self.assertIn("- FOK-5 (FOK-5, Alice", content)
 
     def test_run_update_with_ai_enrichment_enabled(self) -> None:
         def fake_git_output(cmd):

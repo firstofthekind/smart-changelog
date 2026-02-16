@@ -313,6 +313,12 @@ def run_update(*, dry_run: bool, use_ai: bool, forced_ticket: Optional[str], ver
     for ctx in contexts:
         heading = SECTION_HEADINGS.get(ctx.category, SECTION_HEADINGS["change"])
         LOGGER.info("Updating changelog for %s (category: %s)", ctx.ticket_id, ctx.category)
+        changelog_updated, deduplicated = _remove_ticket_from_other_versions(
+            changelog_updated,
+            version_heading,
+            ctx.ticket_id,
+        )
+        changes_made = changes_made or deduplicated
         entry = ctx.render_entry()
         changelog_updated, entry_changed = _upsert_entry_for_version(
             changelog_updated,
@@ -665,7 +671,66 @@ def _find_version_block(content: str, version_heading: str) -> Optional[re.Match
 
 
 def _extract_existing_ids(content: str) -> Set[str]:
-    return set(re.findall(r"(CHANGE-[A-Za-z0-9]+)", content))
+    change_ids = set(re.findall(r"(CHANGE-[A-Za-z0-9]+)", content))
+    jira_ids = {match.group(1) for match in TICKET_PATTERN.finditer(content)}
+    return change_ids.union(jira_ids)
+
+
+def _version_block_pattern() -> re.Pattern[str]:
+    return re.compile(r"(## [^\n]+\n(?:.*?))(?=\n## |\Z)", re.DOTALL)
+
+
+def _remove_ticket_from_other_versions(
+    content: str,
+    current_version_heading: str,
+    ticket_id: str,
+) -> Tuple[str, bool]:
+    matches = list(_version_block_pattern().finditer(content))
+    if not matches:
+        return content, False
+
+    marker = f"({ticket_id}"
+    changed = False
+    parts: List[str] = []
+    cursor = 0
+
+    for match in matches:
+        start, end = match.span(1)
+        parts.append(content[cursor:start])
+        block = match.group(1)
+        heading_line = block.splitlines()[0].strip() if block.strip() else ""
+        replacement = block
+
+        if heading_line and heading_line != current_version_heading:
+            parsed = _parse_version_block(block)
+            updated_sections: Dict[str, List[str]] = {}
+            block_changed = False
+
+            for section_key, entries in parsed["sections"].items():
+                filtered_entries = [line for line in entries if marker not in line]
+                if len(filtered_entries) != len(entries):
+                    block_changed = True
+                updated_sections[section_key] = filtered_entries
+
+            if block_changed:
+                version_value = parsed.get("version") or heading_line.replace("##", "", 1).strip()
+                date_value = parsed.get("date", "")
+                replacement = _render_version_block(version_value, date_value, updated_sections)
+                changed = True
+
+                is_stale_zero = heading_line == "## 0.0" and current_version_heading != "## 0.0"
+                has_entries = any(updated_sections.get(key) for key in SECTION_HEADINGS)
+                if is_stale_zero and not has_entries:
+                    replacement = ""
+
+        parts.append(replacement)
+        cursor = end
+
+    parts.append(content[cursor:])
+    updated_content = "".join(parts)
+    if changed:
+        updated_content = re.sub(r"\n{3,}(## )", r"\n\n\1", updated_content)
+    return updated_content, changed
 
 
 def _contexts_from_commit_history(existing_ids: Set[str], use_ai: bool, limit: int = 50) -> List[UpdateContext]:
